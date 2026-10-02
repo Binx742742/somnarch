@@ -34,7 +34,7 @@
 
 @layer components {
   .dream-vignette {
-    background: radial-gradient(ellipse at center, transparent 48%, rgba(0, 0, 0, 0.62) 100%);
+    background: radial-gradient(ellipse at center, transparent 42%, rgba(0, 0, 0, 0.74) 100%);
   }
   .dream-hurt {
     background: radial-gradient(ellipse at center, transparent 20%, rgba(196, 69, 54, 0.72) 100%);
@@ -44,10 +44,103 @@
     box-shadow: inset 0 0 90px rgba(196, 69, 54, calc(var(--near, 0) * 0.7));
   }
   .dream-grain {
-    opacity: 0.09;
+    opacity: 0.1;
     mix-blend-mode: overlay;
-    background-image: radial-gradient(rgba(240, 230, 216, 0.4) 0.6px, transparent 0.6px);
+    background-image: radial-gradient(rgba(240, 230, 216, 0.55) 0.6px, transparent 0.6px);
     background-size: 3px 3px;
+  }
+  .hunt-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.04em;
+    color: var(--color-fg);
+  }
+  .hunt-row.is-done {
+    color: var(--color-muted);
+  }
+  .hunt-box {
+    width: 0.45rem;
+    height: 0.45rem;
+    flex: none;
+    border: 1px solid var(--color-moon);
+    border-radius: 999px;
+  }
+  .hunt-row.is-done .hunt-box {
+    background: var(--color-blood);
+    border-color: var(--color-blood);
+  }
+  .hunt-pulse {
+    animation: hunt-pulse 0.7s ease;
+  }
+  @keyframes hunt-pulse {
+    0% {
+      filter: brightness(1.85);
+    }
+    100% {
+      filter: brightness(1);
+    }
+  }
+  .ability-ready {
+    opacity: 0.55;
+  }
+  [data-hud="checklist"],
+  [data-hud="map"],
+  [data-hud="cds"],
+  [data-hud="objective"],
+  [data-hud="clock"] {
+    transition: opacity 0.45s ease;
+  }
+  .dream-clock {
+    display: inline-block;
+    padding: 0.15rem 0.7rem;
+    font-family: var(--font-sans);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    color: var(--color-fg);
+    background: color-mix(in srgb, var(--color-bg) 78%, transparent);
+    border: 1px solid var(--color-line);
+  }
+  .dream-lock {
+    position: absolute;
+    z-index: 12;
+    transform: translate(-50%, -120%);
+    text-align: center;
+  }
+  .dream-reticle {
+    display: block;
+    width: 1.35rem;
+    height: 1.35rem;
+    margin: 0 auto;
+    border: 2px solid var(--color-fg);
+    border-radius: 999px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
+  }
+  .dream-lock.is-shut .dream-reticle {
+    border-color: var(--color-blood);
+    animation: reticle-pulse 0.8s ease-in-out infinite;
+  }
+  @keyframes reticle-pulse {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.2);
+      opacity: 0.55;
+    }
+  }
+  .heart {
+    display: block;
+    width: 0.85rem;
+    height: 0.7rem;
+    color: var(--color-line);
+  }
+  .heart.is-on {
+    color: var(--color-blood);
   }
   .meter {
     height: 0.45rem;

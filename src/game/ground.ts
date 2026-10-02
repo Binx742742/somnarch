@@ -153,7 +153,7 @@ export function createGround(radius: number): THREE.Mesh {
     roughness: 0.9,
     metalness: 0.02,
   });
-  mat.customProgramCacheKey = () => "somnarch-ground-v3";
+  mat.customProgramCacheKey = () => "somnarch-ground-v4";
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uHouses = { value: houses };
     shader.uniforms.uDrives = { value: drives };

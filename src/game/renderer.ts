@@ -23,6 +23,9 @@ export type RenderView = {
   hidden: Set<string>;
   shake: number;
   wards: Array<{ id: string; lit: boolean }>;
+  doors: Array<{ id: string; latched: boolean }>;
+  focusDoor: string | null;
+  snares: Array<{ id: string; x: number; z: number }>;
 };
 
 const COATS = [0x7a3a32, 0x3e4c56, 0x8a7d68, 0x3c3348];
@@ -54,13 +57,15 @@ const GradeShader = {
       vec3 col = vec3(cr, cg, cb);
       float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
       float shadow = 1.0 - smoothstep(0.02, 0.35, luma);
-      col = mix(col, col * vec3(1.08, 0.78, 0.86) + vec3(0.012, 0.003, 0.006), shadow * 0.55);
-      float high = smoothstep(0.35, 1.3, luma);
-      col += vec3(0.035, 0.02, 0.008) * high;
-      float vig = smoothstep(0.62, 0.18, r2);
-      col *= mix(0.82, 1.0, vig);
+      col = mix(col, col * vec3(0.42, 0.32, 0.38), shadow * 0.82);
+      float high = smoothstep(0.42, 1.15, luma);
+      col += vec3(0.05, 0.028, 0.008) * high;
+      float vig = smoothstep(0.58, 0.16, r2);
+      col *= mix(0.62, 1.0, vig);
       float n = fract(sin(dot(vUv * vec2(210.0, 93.0) + uTime, vec2(12.9898, 78.233))) * 43758.5453);
-      col += (n - 0.5) * 0.018;
+      col += (n - 0.5) * 0.02;
+      float mote = fract(sin(dot(vUv * vec2(40.0, 17.0) + uTime * 0.15, vec2(41.2, 19.7))) * 12543.1);
+      col += vec3(0.045, 0.032, 0.018) * smoothstep(0.992, 1.0, mote);
       gl_FragColor = vec4(max(col, 0.0), 1.0);
     }
   `,
@@ -84,6 +89,8 @@ export class DreamRenderer {
   private orbit = 0.4;
   private time = 0;
   private shake = 0;
+  private readonly snareRoot = new THREE.Group();
+  private readonly snareMeshes: THREE.Mesh[] = [];
   private readonly look = new THREE.Vector3();
   private readonly proj = new THREE.Vector3();
 
@@ -98,19 +105,20 @@ export class DreamRenderer {
     });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.02;
-    renderer.setClearColor(0x100a10, 1);
+    renderer.toneMappingExposure = this.high ? 0.94 : 1.05;
+    renderer.setClearColor(0x07060c, 1);
     renderer.shadowMap.enabled = this.high;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer = renderer;
-    this.scene.background = new THREE.Color(0x100a10);
-    this.scene.fog = new THREE.FogExp2(0x120c12, this.high ? 0.0115 : 0.0145);
+    this.scene.background = new THREE.Color(0x07060c);
+    this.scene.fog = new THREE.FogExp2(0x141820, this.high ? 0.009 : 0.012);
 
     this.buildLights();
     this.suburb = buildSuburb(this.scene, renderer, this.high);
     this.ash = this.buildAsh();
     this.scene.add(this.actorRoot);
     this.scene.add(this.pickupRoot);
+    this.scene.add(this.snareRoot);
     this.buildShowcase();
 
     this.monsterLight = new THREE.PointLight(0xff3b2a, 0, 11, 2);
@@ -119,7 +127,7 @@ export class DreamRenderer {
     if (this.high) {
       const composer = new EffectComposer(renderer);
       composer.addPass(new RenderPass(this.scene, this.camera));
-      const bloomPass = new UnrealBloomPass(new THREE.Vector2(320, 180), 0.42, 0.38, 0.92);
+      const bloomPass = new UnrealBloomPass(new THREE.Vector2(320, 180), 0.58, 0.46, 0.74);
       composer.addPass(bloomPass);
       const grade = new ShaderPass(GradeShader);
       this.grade = grade;
@@ -156,13 +164,18 @@ export class DreamRenderer {
     for (const hand of this.suburb.clockHands) hand.rotation.z += dt * (hand.userData.fast ? 1.15 : 0.22);
     this.suburb.altarLight.intensity = 18 + Math.sin(this.orbit * 2.4) * 3.5;
     this.suburb.lampLights.forEach((light, i) => {
-      light.intensity = (this.high ? 16 : 10) * (0.9 + Math.sin(this.time * 1.7 + i * 1.3) * 0.08);
+      light.intensity = (this.high ? 28 : 14) * (0.88 + Math.sin(this.time * 1.7 + i * 1.3) * 0.1);
     });
     this.driftAsh(dt);
     this.followMoon(view);
     this.syncActors(dt, view);
     this.syncPickups(view);
     this.syncWards(view);
+    this.syncDoors(view);
+    this.syncSnares(view);
+    this.suburb.porchLights.forEach((light, i) => {
+      light.intensity = 12 * (0.84 + Math.sin(this.time * 2.2 + i * 1.7) * 0.16);
+    });
     if (this.composer) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
   }
@@ -203,22 +216,33 @@ export class DreamRenderer {
     let pitch = THREE.MathUtils.clamp(view.camPitch, 0.28, 1.08);
     let tx = view.targetX;
     let tz = view.targetZ;
-    let dist = view.viewerRole === "somnarch" ? 7.1 : 5.35;
-    if (view.mode === "menu" || view.mode === "end") {
+    const play = view.mode === "play";
+    const slasher = view.viewerRole === "somnarch";
+    let dist = slasher ? 3.28 : 3.62;
+    let shoulder = slasher ? 1.08 : 0.84;
+    if (!play) {
       yaw = this.orbit;
       pitch = view.mode === "end" ? 0.86 : 0.58;
       dist = view.mode === "end" ? 34 : 32;
+      shoulder = 0;
       tx = 0;
       tz = 2;
+    }
+    const fov = play ? 50 : 46;
+    if (Math.abs(this.camera.fov - fov) > 0.1) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
     }
     const gy = groundY(tx, tz);
     const horiz = dist * Math.cos(pitch);
     const fx = -Math.sin(yaw);
     const fz = -Math.cos(yaw);
-    let cx = tx - fx * horiz;
-    let cz = tz - fz * horiz;
-    const cy = Math.max(0.55, 1.45 + dist * Math.sin(pitch)) + gy;
-    if (view.mode === "play") {
+    const rx = -fz;
+    const rz = fx;
+    let cx = tx - fx * horiz + rx * shoulder;
+    let cz = tz - fz * horiz + rz * shoulder;
+    const cy = Math.max(0.7, (play ? 1.62 : 1.45) + dist * Math.sin(pitch)) + gy;
+    if (play) {
       const clamped = pullIn(tx, tz, cx, cz);
       cx = clamped.x;
       cz = clamped.z;
@@ -235,7 +259,8 @@ export class DreamRenderer {
       this.camera.position.x += (Math.random() - 0.5) * this.shake;
       this.camera.position.y += (Math.random() - 0.5) * this.shake * 0.6;
     }
-    this.look.set(tx, (view.viewerRole === "somnarch" ? 1.55 : 1.25) + gy, tz);
+    const lookAhead = play ? 1.65 : 0;
+    this.look.set(tx + fx * lookAhead, (slasher ? 1.48 : 1.32) + gy, tz + fz * lookAhead);
     this.camera.lookAt(this.look);
   }
 
@@ -280,14 +305,18 @@ export class DreamRenderer {
       fig.legL.rotation.x = Math.sin(phase) * amp * stride;
       fig.legR.rotation.x = Math.sin(phase + Math.PI) * amp * stride;
       fig.offArm.rotation.x = -0.2 + Math.sin(phase) * 0.45 * stride;
-      fig.arm.rotation.x = -0.22 - actor.swing * 1.55 + Math.sin(phase + Math.PI) * 0.2 * stride * (1 - actor.swing);
+      const strideArm = Math.sin(phase + Math.PI) * 0.2 * stride * (1 - actor.swing);
+      fig.arm.rotation.x = fig.monster
+        ? 1.42 - actor.swing * 2.15 + strideArm
+        : -0.22 - actor.swing * 1.55 + strideArm;
       const ghost = actor.veilT > 0 && local;
       fig.coat.transparent = ghost;
       fig.coat.opacity = ghost ? 0.42 : 1;
       fig.coat.depthWrite = !ghost;
       fig.coat.emissiveIntensity = ghost ? 0.85 : actor.lucid ? 0.5 : fig.monster ? 0.42 : 0.12;
       if (actor.swing > 0.65) fig.coat.emissive.setHex(0xffe1c4);
-      else fig.coat.emissive.setHex(fig.monster ? 0x3a0c08 : actor.lucid ? 0x5a4630 : 0x14080c);
+      else fig.coat.emissive.setHex(fig.monster ? 0x120606 : actor.lucid ? 0x5a4630 : 0x14080c);
+      if (fig.monster && actor.swing <= 0.65) fig.coat.emissiveIntensity = 0.08;
       if (!fig.monster) fig.eyes.color.setHex(actor.lucid ? 0xe4d3b0 : 0x1a1214);
       if (actor.role === "somnarch") {
         mon = actor;
@@ -301,7 +330,7 @@ export class DreamRenderer {
       }
     }
     const showMon = !!mon && !view.hidden.has(mon.id) && view.mode === "play";
-    this.monsterLight.intensity = showMon ? 16 : 0;
+    this.monsterLight.intensity = showMon ? 4.5 : 0;
   }
 
   private syncPickups(view: RenderView): void {
@@ -344,9 +373,9 @@ export class DreamRenderer {
   }
 
   private buildLights(): void {
-    this.scene.add(new THREE.HemisphereLight(0x8e98b8, 0x2a1216, this.high ? 0.38 : 0.62));
-    this.scene.add(new THREE.AmbientLight(0x1a1218, this.high ? 0.14 : 0.28));
-    const moon = new THREE.DirectionalLight(0xc9d6ff, this.high ? 2.45 : 2.15);
+    this.scene.add(new THREE.HemisphereLight(0x6a7898, 0x1a0c10, this.high ? 0.22 : 0.48));
+    this.scene.add(new THREE.AmbientLight(0x120c12, this.high ? 0.06 : 0.2));
+    const moon = new THREE.DirectionalLight(0xb7c8ee, this.high ? 1.28 : 1.7);
     this.moon = moon;
     moon.position.set(28, 48, -18);
     moon.target.position.set(0, 0, 0);
@@ -364,13 +393,13 @@ export class DreamRenderer {
       moon.shadow.bias = -0.0002;
       moon.shadow.normalBias = 0.035;
     }
-    const fill = new THREE.DirectionalLight(0xffb090, 0.38);
+    const fill = new THREE.DirectionalLight(0xffb090, this.high ? 0.16 : 0.28);
     fill.position.set(-22, 12, 16);
     this.scene.add(fill);
   }
 
   private buildAsh(): THREE.BufferGeometry {
-    const n = this.high ? 380 : 160;
+    const n = this.high ? 520 : 180;
     const positions = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
       positions[i * 3] = (Math.random() - 0.5) * 28;
@@ -382,10 +411,10 @@ export class DreamRenderer {
     const pts = new THREE.Points(
       geo,
       new THREE.PointsMaterial({
-        color: 0xd9cbb6,
-        size: 0.055,
+        color: 0xe7d7c0,
+        size: 0.07,
         transparent: true,
-        opacity: 0.4,
+        opacity: 0.55,
         depthWrite: false,
       }),
     );
@@ -400,6 +429,48 @@ export class DreamRenderer {
     const y = groundY(view.targetX, view.targetZ);
     this.moon.target.position.set(view.targetX, y, view.targetZ);
     this.moon.position.set(view.targetX + 28, y + 48, view.targetZ - 18);
+  }
+
+  private syncDoors(view: RenderView): void {
+    for (const door of this.suburb.doors) {
+      const latched = view.doors.some((d) => d.id === door.id && d.latched);
+      const closed = view.mode !== "play" || latched;
+      const base = door.pivot.userData.yaw as number;
+      const target = base - (closed ? 0 : 1.22);
+      door.pivot.rotation.y += (target - door.pivot.rotation.y) * 0.28;
+      door.latch.visible = closed;
+      door.bar.visible = latched;
+      const pulse = latched ? 1 + Math.sin(this.time * 7) * 0.16 : 1;
+      door.latch.scale.setScalar(pulse);
+      const iron = door.latch.material;
+      if (iron instanceof THREE.MeshStandardMaterial) {
+        iron.emissive.setHex(latched ? 0xff2418 : 0x000000);
+        iron.emissiveIntensity = latched ? 2.2 : 0;
+      }
+      const approached = view.focusDoor === door.id;
+      door.rim.visible = approached;
+      door.rimMat.color.setHex(latched ? 0xc44536 : 0xf0e6d8);
+      door.rimMat.opacity = latched ? 0.42 + 0.58 * (0.5 + 0.5 * Math.sin(this.time * 7)) : 0.92;
+      door.rim.scale.setScalar(latched ? pulse : 1);
+    }
+  }
+
+  private syncSnares(view: RenderView): void {
+    while (this.snareMeshes.length < view.snares.length) {
+      const mesh = new THREE.Mesh(
+        new THREE.TorusGeometry(0.42, 0.025, 6, 14),
+        new THREE.MeshBasicMaterial({ color: 0xc44536 }),
+      );
+      mesh.rotation.x = Math.PI / 2;
+      this.snareRoot.add(mesh);
+      this.snareMeshes.push(mesh);
+    }
+    this.snareMeshes.forEach((mesh, i) => {
+      const snare = view.snares[i];
+      mesh.visible = !!snare && view.mode === "play";
+      if (!snare) return;
+      mesh.position.set(snare.x, groundY(snare.x, snare.z) + 0.06, snare.z);
+    });
   }
 
   private syncWards(view: RenderView): void {
