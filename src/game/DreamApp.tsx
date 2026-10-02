@@ -25,6 +25,12 @@ function collectHud(root: HTMLDivElement): HudNodes {
     map: root.querySelector('[data-hud="map"]') as HTMLCanvasElement | null,
     names: q("names"),
     role: q("role"),
+    clock: q("clock"),
+    checklist: q("checklist"),
+    mood: q("mood"),
+    moodLabel: q("mood-label"),
+    lock: q("lock"),
+    hearts: q("hearts"),
   };
 }
 
@@ -120,7 +126,7 @@ export function DreamApp() {
           <p className="font-display text-xs tracking-widest text-moon">FIVE-SOUL HORROR</p>
           <h1 className="mt-2 font-display text-4xl text-fg md:text-5xl">SOMNARCH</h1>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-muted">
-            Four dreamers. One stitched butcher. Wake the cul-de-sac, or be sewn into it.
+            Four dreamers. One stitched butcher. Latch the porch when he is close, kindle the hearths, or be sewn into the street.
           </p>
           {bootError ? <p className="mt-4 text-sm text-blood">{bootError}</p> : null}
 
@@ -167,38 +173,53 @@ export function DreamApp() {
       ) : null}
 
       <div className={playing ? "pointer-events-none absolute inset-0 z-10" : "hidden"}>
-        <div className="absolute top-4 right-4 left-4 flex items-start justify-between gap-3 md:left-auto md:w-96">
-          <div className="min-w-0">
-            <p data-hud="role" className="font-display text-xs tracking-widest text-moon" />
-            <p data-hud="objective" className="mt-1 max-w-xs text-sm leading-snug text-fg" />
-          </div>
-          <canvas data-hud="map" width={148} height={148} className="h-24 w-24 shrink-0 rounded-full border border-line" />
+        <div className="absolute top-4 left-4 max-w-56">
+          <p data-hud="role" className="font-display text-xs tracking-widest text-moon" />
+          <div data-hud="checklist" className="mt-2 flex flex-col gap-1" />
+          <p data-hud="objective" className="mt-2 max-w-56 text-xs leading-snug text-muted" />
         </div>
-        <p data-hud="banner" className="absolute top-28 right-4 left-4 text-center font-display text-sm text-moon md:top-24" />
-        <div data-hud="log" className="absolute top-36 right-4 hidden max-w-xs text-right text-xs text-muted md:block" />
-        <div data-hud="monster" className="absolute top-4 left-1/2 w-40 -translate-x-1/2">
-          <p className="mb-1 text-center text-xs tracking-widest text-blood">SOMNARCH</p>
-          <div className="meter">
-            <span data-hud="monster-fill" className="bg-blood" />
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 text-center">
+          <p data-hud="clock" className="dream-clock" />
+          <div data-hud="monster" className="mt-2 w-40">
+            <div className="meter">
+              <span data-hud="monster-fill" className="bg-blood" />
+            </div>
           </div>
         </div>
-        <div className={`absolute right-4 left-4 flex max-w-lg flex-col gap-2 md:left-6 ${coarse ? "bottom-44" : "bottom-6"}`}>
-          <p data-hud="prompt" className="font-display text-sm text-moon" />
-          <div data-hud="channel" className="meter max-w-xs">
+        <div className="absolute top-4 right-4 flex flex-col items-end gap-1">
+          <canvas data-hud="map" width={148} height={148} className="h-20 w-20 rounded-full border border-line bg-bg md:h-24 md:w-24" />
+          <div data-hud="hearts" className="flex gap-1" />
+        </div>
+        <p data-hud="banner" className="absolute top-24 right-4 left-4 text-center font-display text-sm text-moon" />
+        <div data-hud="log" className="absolute top-32 right-36 hidden max-w-xs text-right text-xs text-muted md:block" />
+        <div data-hud="lock" className="dream-lock" hidden>
+          <span className="dream-reticle" />
+        </div>
+        <p data-hud="prompt" className={`absolute right-4 left-4 text-center font-display text-sm text-moon ${coarse ? "bottom-52" : "bottom-28"}`} />
+        <div className={`absolute left-4 flex w-44 flex-col gap-1 ${coarse ? "bottom-44" : "bottom-4"}`}>
+          <div data-hud="channel" className="meter" hidden>
             <span data-hud="channel-fill" className="bg-moon" />
           </div>
-          <p data-hud="keys" className="text-sm text-fg" />
-          <div className="meter max-w-xs">
+          <p className="text-xs tracking-widest text-blood">Life</p>
+          <div className="meter">
             <span data-hud="hp" className="bg-blood" />
           </div>
-          <div className="meter max-w-xs">
+          <p className="text-xs tracking-widest text-moon">Breath</p>
+          <div className="meter">
             <span data-hud="stam" className="bg-moon" />
           </div>
+          <p data-hud="mood-label" className="text-xs tracking-widest text-muted" />
+          <div className="meter">
+            <span data-hud="mood" className="bg-blood" />
+          </div>
+          <p data-hud="keys" className="text-xs text-fg" />
           <p data-hud="items" className="text-xs text-muted" />
-          <p data-hud="cds" className="text-xs text-moon" />
+        </div>
+        <div className={`absolute right-4 max-w-48 text-right ${coarse ? "bottom-44" : "bottom-4"}`}>
+          <p data-hud="cds" className="ability-ready text-xs leading-relaxed whitespace-pre-line text-moon" />
           {!coarse ? (
-            <p className="text-xs text-muted">
-              <kbd>WASD</kbd> move <kbd>Shift</kbd> sprint <kbd>Space</kbd> dodge <kbd>E</kbd> rite <kbd>F</kbd> item <kbd>Q</kbd> veil/pulse <kbd>R</kbd> tether/stitch <kbd>LMB</kbd> strike <kbd>Esc</kbd> pause
+            <p className="mt-2 text-xs text-muted">
+              <kbd>WASD</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> <kbd>E</kbd> vault <kbd>F</kbd> <kbd>Q</kbd> <kbd>R</kbd> <kbd>LMB</kbd>
             </p>
           ) : null}
         </div>

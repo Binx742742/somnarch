@@ -1,15 +1,17 @@
 import { P2PRoom, type PeerInfo } from "@/lib/multiplayer";
 import { DreamAudio } from "./audio";
-import { BOUNDARY, BLOCKS, groundY, moveCircle } from "./level";
+import { BOUNDARY, BLOCKS, CAR_SPOTS, SHORTCUTS, doorSpots, groundY, moveCircle, setLatchedDoors } from "./level";
 import { DreamRenderer, type RenderView } from "./renderer";
 import {
   RULES,
   cameraToWorld,
+  checklistFor,
   createMatch,
   dreamerVisibleToMonster,
   monsterOf,
   monsterVisibleTo,
   objectiveFor,
+  promptDoor,
   promptFor,
   step,
   yawForDirection,
@@ -52,6 +54,12 @@ export type HudNodes = {
   map: HTMLCanvasElement | null;
   names: HTMLElement | null;
   role: HTMLElement | null;
+  clock: HTMLElement | null;
+  checklist: HTMLElement | null;
+  mood: HTMLElement | null;
+  moodLabel: HTMLElement | null;
+  lock: HTMLElement | null;
+  hearts: HTMLElement | null;
 };
 
 type NetMsg =
@@ -70,6 +78,11 @@ type SnapState = {
   actors: Actor[];
   pickups: Match["pickups"];
   wards?: Match["wards"];
+  doors?: Match["doors"];
+  snares?: Match["snares"];
+  cars?: Match["cars"];
+  phones?: number;
+  taughtLatch?: boolean;
 };
 
 const GAME_KEYS = new Set([
@@ -457,6 +470,7 @@ export class DreamSession {
     }
     const sprint = this.localInput.sprint ? 1.56 : 1;
     const speed = (me.role === "somnarch" ? 5.55 : 4.45) * sprint;
+    if (this.match) setLatchedDoors(this.match.doors.filter((d) => d.latched).map((d) => d.id));
     const ox = me.x;
     const oz = me.z;
     const next = moveCircle(
@@ -491,6 +505,7 @@ export class DreamSession {
       else if (e.type === "ward") this.audio.ward();
       else if (e.type === "snuff") this.audio.snuff();
       else if (e.type === "stitch") this.audio.stitch();
+      else if (e.type === "door") this.audio.door(e.broken);
     }
   }
 
@@ -522,7 +537,8 @@ export class DreamSession {
       }
       return 0;
     }
-    return Math.max(0, Math.min(1, 1 - Math.hypot(me.x - mon.x, me.z - mon.z) / 18));
+    const near = Math.max(0, Math.min(1, 1 - Math.hypot(me.x - mon.x, me.z - mon.z) / 18));
+    return Math.max(near, Math.min(1, me.fear / 120));
   }
 
   private makeView(): RenderView {
@@ -552,6 +568,9 @@ export class DreamSession {
       hidden,
       shake: this.impulse,
       wards: this.match?.wards ?? [],
+      doors: this.match?.doors ?? [],
+      focusDoor: this.match && me ? (promptDoor(this.match, me.id)?.id ?? null) : null,
+      snares: this.match?.snares ?? [],
     };
   }
 
@@ -576,6 +595,17 @@ export class DreamSession {
     setText(this.hud.objective, objectiveFor(this.match, me.id));
     setText(this.hud.prompt, promptFor(this.match, me.id));
     setText(this.hud.role, roleLabel(me));
+    setText(this.hud.clock, clockText(this.match.time));
+    paintChecklist(this.hud.checklist, checklistFor(this.match, me.id));
+    const quiet = me.role === "somnarch" ? me.spd < 2.8 && me.stalk > 18 : me.fear < 22;
+    const fade = quiet ? "0.32" : "1";
+    for (const el of [this.hud.checklist, this.hud.objective, this.hud.clock, this.hud.map, this.hud.cds]) {
+      if (el) el.style.opacity = fade;
+    }
+    const mood = me.role === "somnarch" ? me.stalk / 100 : me.fear / 100;
+    if (this.hud.mood) this.hud.mood.style.transform = `scaleX(${Math.max(0, Math.min(1, mood))})`;
+    setText(this.hud.moodLabel, me.role === "somnarch" ? "Stalk" : "Fear");
+    this.placeLock(me);
     const hpMax = me.role === "somnarch" ? RULES.MONSTER_HP : RULES.DREAMER_HP;
     if (this.hud.hp) this.hud.hp.style.transform = `scaleX(${Math.max(0, me.hp / hpMax)})`;
     if (this.hud.stam) this.hud.stam.style.transform = `scaleX(${me.stamina / 100})`;
@@ -588,7 +618,23 @@ export class DreamSession {
           : `Latch-keys ${me.fragments}/${RULES.WAKE_NEED} · nerve ${Math.round(me.nerve)}`,
     );
     const channelMax =
-      me.channel === 2 ? RULES.REVIVE_TIME : me.channel === 3 ? RULES.WARD_TIME : me.channel === 4 ? RULES.SNUFF_TIME : RULES.WAKE_TIME;
+      me.channel === 2
+        ? RULES.REVIVE_TIME
+        : me.channel === 3
+          ? RULES.WARD_TIME
+          : me.channel === 4
+            ? RULES.SNUFF_TIME
+            : me.channel === 5
+              ? RULES.LATCH_TIME
+              : me.channel === 6
+                ? RULES.BREAK_TIME
+                : me.channel === 7
+                  ? me.role === "somnarch"
+                    ? RULES.CELLAR_SLOW
+                    : RULES.HOP_TIME
+                  : me.channel === 8
+                    ? RULES.CRANK_TIME
+                    : RULES.WAKE_TIME;
     if (this.hud.channel) this.hud.channel.hidden = me.channel === 0;
     if (this.hud.channelFill) this.hud.channelFill.style.transform = `scaleX(${Math.min(1, me.channelT / channelMax)})`;
     if (this.hud.banner) {
@@ -605,18 +651,41 @@ export class DreamSession {
       );
     }
     setText(this.hud.items, me.items.length ? me.items.map(itemLabel).join(" · ") : "Empty pockets");
-    const cds = [
-      me.role === "somnarch" ? cd("Sense", me.abilityCd) : me.lucid ? cd("Pulse", me.abilityCd) : cd("Veil", me.abilityCd),
-      cd("Dodge", me.dashCd),
-      me.role === "somnarch" ? cd("Stitch", me.kitCd) : me.lucid ? cd("Tether", me.tetherCd) : "",
-    ].filter(Boolean);
-    setText(this.hud.cds, cds.join("  "));
+    const ready: string[] = [];
+    if (me.abilityCd <= 0.05) {
+      if (me.role === "somnarch") ready.push("Q sense");
+      else if (me.lucid) ready.push("Q pulse");
+      else if (me.nerve >= 34) ready.push("Q veil");
+    }
+    if (me.dashCd <= 0.05) ready.push("Space");
+    if (me.role === "somnarch" && me.kitCd <= 0.05) ready.push("R stitch");
+    if (me.role === "dreamer" && me.lucid && me.tetherCd <= 0.05) ready.push("R tether");
+    if (me.items.length > 0) ready.push("F");
+    setText(this.hud.cds, ready.join("\n"));
     const mon = monsterOf(this.match);
-    const showMon = !!mon && (me.role === "somnarch" || me.lucid || (me.senseT > 0 && !mon.dead));
+    const showMon = !!mon && me.role === "dreamer" && (me.lucid || (me.senseT > 0 && !mon.dead));
     if (this.hud.monsterWrap) this.hud.monsterWrap.hidden = !showMon;
     if (this.hud.monsterFill && mon) this.hud.monsterFill.style.transform = `scaleX(${Math.max(0, mon.hp / RULES.MONSTER_HP)})`;
+    paintHearts(this.hud.hearts, me.hp, hpMax);
     this.drawMap(me);
     this.drawNames(me);
+  }
+
+  private placeLock(me: Actor): void {
+    const lock = this.hud.lock;
+    if (!lock || !this.match) return;
+    const door = promptDoor(this.match, me.id);
+    if (!door) {
+      lock.hidden = true;
+      return;
+    }
+    lock.classList.toggle("is-shut", door.latched);
+    const host = this.hud.root?.getBoundingClientRect();
+    if (!host) return;
+    const p = this.renderer.project(door.x, groundY(door.x, door.z) + 1.45, door.z, host.width, host.height);
+    lock.hidden = !p.visible;
+    lock.style.left = `${p.x}px`;
+    lock.style.top = `${p.y}px`;
   }
 
   private drawMap(me: Actor): void {
@@ -637,6 +706,10 @@ export class DreamSession {
     ctx.beginPath();
     ctx.arc(s / 2, s / 2, s * 0.42, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.fillStyle = "rgba(228,211,176,0.9)";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("N", s / 2, 16);
     ctx.fillStyle = "rgba(196,69,54,0.9)";
     for (const b of BLOCKS) {
       ctx.globalAlpha = 0.85;
@@ -644,6 +717,15 @@ export class DreamSession {
       ctx.fillRect(X(b.x - b.w / 2), Y(b.z - b.d / 2), (b.w / BOUNDARY) * s * 0.42, (b.d / BOUNDARY) * s * 0.42);
     }
     ctx.globalAlpha = 1;
+    ctx.fillStyle = "rgba(228,211,176,0.7)";
+    for (const sc of SHORTCUTS) {
+      ctx.fillRect(X(sc.ax) - 1.2, Y(sc.az) - 1.2, 2.4, 2.4);
+      ctx.fillRect(X(sc.bx) - 1.2, Y(sc.bz) - 1.2, 2.4, 2.4);
+    }
+    for (const door of this.match.doors) {
+      ctx.fillStyle = door.latched ? "#c44536" : "rgba(228,211,176,0.85)";
+      ctx.fillRect(X(door.x) - 1.5, Y(door.z) - 1.5, 3, 3);
+    }
     if (me.role === "dreamer") {
       ctx.fillStyle = "#e4d3b0";
       ctx.beginPath();
@@ -654,8 +736,8 @@ export class DreamSession {
         ctx.fillRect(X(w.x) - 2, Y(w.z) - 2, 4, 4);
       }
       for (const p of this.match.pickups) {
-        if (p.taken || p.kind !== "fragment") continue;
-        ctx.fillStyle = "#e4d3b0";
+        if (p.taken || (p.kind !== "fragment" && p.kind !== "phone")) continue;
+        ctx.fillStyle = p.kind === "phone" ? "#c44536" : "#e4d3b0";
         ctx.fillRect(X(p.x) - 1.5, Y(p.z) - 1.5, 3, 3);
       }
     }
@@ -670,6 +752,15 @@ export class DreamSession {
       ctx.beginPath();
       ctx.arc(X(a.x), Y(a.z), a.id === me.id ? 4 : 3, 0, Math.PI * 2);
       ctx.fill();
+      if (a.id === me.id) {
+        const fx = -Math.sin(me.yaw);
+        const fz = -Math.cos(me.yaw);
+        ctx.strokeStyle = "#e4d3b0";
+        ctx.beginPath();
+        ctx.moveTo(X(a.x), Y(a.z));
+        ctx.lineTo(X(a.x) + fx * 7, Y(a.z) + fz * 7);
+        ctx.stroke();
+      }
     }
   }
 
@@ -862,7 +953,16 @@ export class DreamSession {
       actors: state.actors,
       pickups: state.pickups,
       wards: state.wards ?? [],
+      doors: (state.doors ?? doorSpots().map((d) => ({ ...d, latched: false, hits: 0, rattle: 0 }))).map((d) => ({
+        ...d,
+        rattle: d.rattle ?? 0,
+      })),
+      snares: state.snares ?? [],
+      cars: state.cars ?? CAR_SPOTS.map((c) => ({ ...c, cd: 0 })),
+      phones: state.phones ?? 0,
+      taughtLatch: state.taughtLatch ?? false,
     };
+    setLatchedDoors(this.match.doors.filter((d) => d.latched).map((d) => d.id));
     const me = this.me();
     if (prev && me && !me.dead) {
       const err = Math.hypot(prev.x - me.x, prev.z - me.z);
@@ -990,11 +1090,6 @@ function itemLabel(kind: string): string {
   return "Alarm";
 }
 
-function cd(label: string, time: number): string {
-  if (time <= 0.05) return `${label} ready`;
-  return time >= 1 ? `${label} ${time.toFixed(0)}s` : `${label} ${time.toFixed(1)}s`;
-}
-
 function linkLabel(state: string): string {
   if (state === "connected") return "linked";
   if (state === "failed") return "blocked";
@@ -1011,5 +1106,56 @@ function snapOf(m: Match): SnapState {
     actors: m.actors.map((a) => ({ ...a, items: a.items.slice() })),
     pickups: m.pickups.map((p) => ({ ...p })),
     wards: m.wards.map((w) => ({ ...w })),
+    doors: m.doors.map((d) => ({ ...d })),
+    snares: m.snares.map((s) => ({ ...s })),
+    cars: m.cars.map((c) => ({ ...c })),
+    phones: m.phones,
+    taughtLatch: m.taughtLatch,
   };
+}
+
+function clockText(t: number): string {
+  const s = Math.max(0, Math.floor(t));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
+}
+
+function paintHearts(el: HTMLElement | null, hp: number, max: number): void {
+  if (!el || max <= 0) return;
+  const filled = Math.max(0, Math.min(5, Math.round((hp / max) * 5)));
+  const sig = String(filled);
+  if (el.dataset.sig === sig && el.childElementCount === 5) return;
+  el.dataset.sig = sig;
+  el.replaceChildren(
+    ...Array.from({ length: 5 }, (_, i) => {
+      const heart = document.createElement("span");
+      heart.className = i < filled ? "heart is-on" : "heart";
+      heart.innerHTML =
+        '<svg viewBox="0 0 20 18" width="14" height="12" aria-hidden="true"><path fill="currentColor" d="M10 16.2 2.4 8.6A4.2 4.2 0 0 1 10 4.2 4.2 4.2 0 0 1 17.6 8.6Z"/></svg>';
+      return heart;
+    }),
+  );
+}
+
+function paintChecklist(el: HTMLElement | null, rows: { label: string; done: boolean }[]): void {
+  if (!el) return;
+  const sig = rows.map((r) => `${r.done ? "1" : "0"}${r.label}`).join("|");
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
+  el.classList.remove("hunt-pulse");
+  void el.offsetWidth;
+  el.classList.add("hunt-pulse");
+  el.replaceChildren(
+    ...rows.map((row) => {
+      const line = document.createElement("div");
+      line.className = row.done ? "hunt-row is-done" : "hunt-row";
+      const box = document.createElement("span");
+      box.className = "hunt-box";
+      const label = document.createElement("span");
+      label.textContent = row.label;
+      line.append(box, label);
+      return line;
+    }),
+  );
 }

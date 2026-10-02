@@ -11,7 +11,7 @@ export type Block = {
   interior?: boolean;
 };
 
-export const BOUNDARY = 64;
+export const BOUNDARY = 74;
 
 /** Overlook north-east of the mill. Characters and the hill mesh share this profile. */
 export const HILL = { x: 8, z: 56, r: 7.2, h: 3.8 };
@@ -39,6 +39,10 @@ export const BLOCKS: Block[] = [
   { kind: "cabin", x: 52, z: 18, w: 6.5, d: 6, h: 4.4 },
   { kind: "rectory", x: 46, z: -26, w: 7, d: 7, h: 5.1 },
   { kind: "shelter", x: -6, z: -38, w: 8, d: 5, h: 3.2, interior: true },
+  { kind: "radio", x: 64, z: 4, w: 9, d: 8, h: 5.4, interior: true },
+  { kind: "orchard", x: -62, z: -24, w: 8, d: 7, h: 4.6, interior: true },
+  { kind: "twin", x: -63, z: 22, w: 7, d: 6.5, h: 5 },
+  { kind: "pump", x: 64, z: -18, w: 7, d: 6, h: 4.2 },
 ];
 
 export const LAMPS: Array<[number, number]> = [
@@ -54,6 +58,9 @@ export const LAMPS: Array<[number, number]> = [
   [-16, 34],
   [40, 16],
   [-40, 4],
+  [54, 4],
+  [-54, -8],
+  [54, -20],
 ];
 
 /** Hearths a lucid dreamer must kindle. Placed in open floor or just outside a door. */
@@ -110,16 +117,49 @@ export const LOOT_SPOTS: Array<[number, number]> = [
   [36, 18],
   [-22, 28],
   [18, 34],
+  [56, 12],
+  [54, -22],
+  [-54, -16],
+  [-54, 16],
+  [48, -36],
 ];
 
 export const DREAMER_SPAWNS: Array<[number, number]> = [
-  [0, 6.5],
-  [-12, 2],
-  [12, -2],
-  [-4, -13],
+  [-56, 10],
+  [-48, -30],
+  [12, -56],
+  [56, 26],
 ];
 
-export const MONSTER_SPAWN: [number, number] = [0, 14];
+/** Far yard, so the open minutes are for learning the streets. */
+export const MONSTER_SPAWN: [number, number] = [58, 36];
+
+export type Shortcut = {
+  id: string;
+  kind: "fence" | "sewer" | "cellar";
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+};
+
+/** Two mouths. Dreamers slip across; only cellars let the butcher follow, and slowly. */
+export const SHORTCUTS: Shortcut[] = [
+  { id: "west-fence", kind: "fence", ax: -42, az: 16, bx: -22, bz: 36 },
+  { id: "east-fence", kind: "fence", ax: 44, az: 20, bx: 36, bz: -32 },
+  { id: "south-drain", kind: "sewer", ax: 8, az: -42, bx: -36, bz: -18 },
+  { id: "east-drain", kind: "sewer", ax: 54, az: -10, bx: 28, bz: 8 },
+  { id: "school-barn", kind: "cellar", ax: 6, az: -21, bx: -16, bz: 44 },
+  { id: "shelter-diner", kind: "cellar", ax: -6, az: -38, bx: -21, bz: -5 },
+  { id: "grave-chapel", kind: "cellar", ax: 2, az: -48, bx: 20, bz: 14 },
+];
+
+export const CAR_SPOTS: Array<{ id: string; x: number; z: number }> = [
+  { id: "cul-car", x: 14, z: -6 },
+  { id: "west-car", x: -14, z: 6 },
+  { id: "south-car", x: 32, z: -30 },
+  { id: "east-car", x: 40, z: -6 },
+];
 
 export const PATROL: Array<[number, number]> = [
   [0, 12],
@@ -133,10 +173,55 @@ export const PATROL: Array<[number, number]> = [
   [-40, 2],
   [-16, 34],
   [-6, 16],
+  [58, 4],
+  [-56, -12],
 ];
 
 const WALL = 0.72;
 const DOOR = 0.92;
+
+const latchedDoors = new Set<string>();
+
+/** Interior doors the simulation can latch. Ids match block.kind. */
+export function setLatchedDoors(ids: readonly string[]): void {
+  latchedDoors.clear();
+  for (const id of ids) latchedDoors.add(id);
+}
+
+export type DoorSpot = { id: string; x: number; z: number };
+
+export function doorSpots(): DoorSpot[] {
+  const spots: DoorSpot[] = [];
+  for (const b of BLOCKS) {
+    if (!b.interior) continue;
+    const f = front(b);
+    const hd = f.nx !== 0 ? b.w * 0.5 : b.d * 0.5;
+    spots.push({ id: b.kind, x: b.x + f.nx * (hd - 0.15), z: b.z + f.nz * (hd - 0.15) });
+  }
+  return spots;
+}
+
+/** Hinge pose for the street door. Local +X runs along the door; yaw 0 is closed. */
+export type DoorPose = { id: string; x: number; z: number; yaw: number };
+
+export function doorPoses(): DoorPose[] {
+  const half = 0.78;
+  const poses: DoorPose[] = [];
+  for (const b of BLOCKS) {
+    if (!b.interior) continue;
+    const f = front(b);
+    const hd = f.nx !== 0 ? b.w * 0.5 : b.d * 0.5;
+    const cx = b.x + f.nx * (hd - 0.08);
+    const cz = b.z + f.nz * (hd - 0.08);
+    poses.push({
+      id: b.kind,
+      x: cx - f.tx * half,
+      z: cz - f.tz * half,
+      yaw: Math.atan2(-f.tz, f.tx),
+    });
+  }
+  return poses;
+}
 
 function front(b: Block): { nx: number; nz: number; tx: number; tz: number } {
   const ax = Math.abs(b.x);
@@ -161,7 +246,9 @@ function hitsShell(b: Block, x: number, z: number, radius: number): boolean {
   const along = (x - b.x) * f.tx + (z - b.z) * f.tz;
   const depth = (x - b.x) * f.nx + (z - b.z) * f.nz;
   const hd = f.nx !== 0 ? hx : hz;
-  if (Math.abs(along) < DOOR && depth > hd - WALL - radius && depth < hd + radius) return false;
+  if (Math.abs(along) < DOOR && depth > hd - WALL - radius && depth < hd + radius) {
+    return latchedDoors.has(b.kind);
+  }
   return true;
 }
 

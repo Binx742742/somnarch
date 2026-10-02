@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { BLOCKS, BOUNDARY, HILL, LAMPS, WARD_SPOTS, groundY, hitsBlock, type Block } from "./level";
+import { BLOCKS, BOUNDARY, CAR_SPOTS, HILL, LAMPS, SHORTCUTS, WARD_SPOTS, doorPoses, doorSpots, groundY, hitsBlock, type Block } from "./level";
 import { createGround } from "./ground";
 import { orient, surfaceAt, type Front } from "./roads";
 import { createSuburbTextures, type SuburbTextures } from "./textures";
@@ -14,6 +14,8 @@ export type SuburbHandle = {
   textures: THREE.Texture[];
   environment: THREE.Texture | null;
   wards: Array<{ id: string; light: THREE.PointLight | null; mat: THREE.MeshStandardMaterial }>;
+  doors: Array<{ id: string; pivot: THREE.Group; latch: THREE.Mesh; bar: THREE.Object3D; rim: THREE.Group; rimMat: THREE.MeshBasicMaterial }>;
+  porchLights: THREE.PointLight[];
 };
 
 type Style = {
@@ -47,6 +49,10 @@ const STYLES: Record<string, Style> = {
   cabin: { wall: "siding", tint: 0xe0c8a8, roof: "front", porch: true, special: "house", rise: 1.85 },
   rectory: { wall: "brick", tint: 0x6e403c, roof: "front", porch: true, special: "house", rise: 2.05 },
   shelter: { wall: "siding", tint: 0xb7a48a, roof: "eave", porch: false, special: "house", rise: 0.8 },
+  radio: { wall: "siding", tint: 0xc4b08a, roof: "eave", porch: true, special: "house", rise: 0.55 },
+  orchard: { wall: "siding", tint: 0xd8c4a6, roof: "eave", porch: true, special: "house", rise: 1.5 },
+  twin: { wall: "siding", tint: 0xead8c4, roof: "front", porch: true, special: "house", rise: 2.1 },
+  pump: { wall: "brick", tint: 0x6e564c, roof: "eave", porch: false, special: "house", rise: 0.7 },
 };
 
 const WHITE = new THREE.Color(0xffffff);
@@ -100,6 +106,7 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
   buildTrees(scene, mats, high);
   buildCars(mats, bucket);
   buildProps(mats, bucket, windows);
+  buildRoutes(mats, bucket, windows);
   buildFloaters(scene);
   buildSmoke(scene);
   buildHill(scene);
@@ -128,8 +135,10 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
         float pulse = 0.78 + 0.22 * sin(uTime * (1.1 + phase * 2.2) + phase * 6.2831);
         float blink = smoothstep(0.988, 0.998, sin(uTime * (6.5 + phase * 8.0) + phase * 13.0));
         float dark = smoothstep(0.8, 0.86, phase);
-        float lit = mix(pulse + blink * 0.7, 0.05, dark);
-        vec3 col = vColor * lit;
+        float lit = mix(pulse + blink * 0.85, 0.04, dark);
+        float warm = smoothstep(0.15, 0.85, vColor.r / (vColor.b + 0.05));
+        vec3 amber = vec3(vColor.r * 1.28, vColor.g * 0.7, vColor.b * 0.28);
+        vec3 col = mix(vColor, amber, warm) * lit;
         float dist = length(vWorld - cameraPosition);
         float fogF = 1.0 - exp(-dist * 0.012);
         col = mix(col, vec3(0.01, 0.006, 0.008), fogF);
@@ -156,26 +165,45 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
   scene.add(altarLight);
 
   const lampLights: THREE.PointLight[] = [];
-  LAMPS.slice(0, 3).forEach(([x, z]) => {
-    if (hitsBlock(x, z, 0.4)) return;
+  const lampIdx = high ? [0, 1, 2, 11, 12, 13] : [0, 1, 2];
+  for (const i of lampIdx) {
+    const spot = LAMPS[i];
+    if (!spot) continue;
+    const [x, z] = spot;
+    if (hitsBlock(x, z, 0.4)) continue;
     const head = lampHead(x, z);
-    const light = new THREE.PointLight(0xffc898, high ? 16 : 10, 16, 2);
+    const light = new THREE.PointLight(0xffb46a, high ? 30 : 14, 18, 2);
     light.position.set(head[0], 4.2, head[1]);
     scene.add(light);
     lampLights.push(light);
-  });
+    addLampShaft(scene, head[0], 4.2, head[1]);
+  }
+
+  const porchLights: THREE.PointLight[] = [];
+  for (const door of doorSpots()) {
+    addLampShaft(scene, door.x, groundY(door.x, door.z) + 2.55, door.z, 0.16);
+  }
+  if (high) {
+    for (const door of doorSpots().slice(0, 3)) {
+      const light = new THREE.PointLight(0xffb070, 10, 9, 2);
+      light.position.set(door.x, groundY(door.x, door.z) + 2.45, door.z);
+      scene.add(light);
+      porchLights.push(light);
+    }
+  }
+  const doors = buildDoors(scene);
 
   let environment: THREE.Texture | null = null;
   if (high) {
     const pmrem = new THREE.PMREMGenerator(renderer);
     environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     scene.environment = environment;
-    scene.environmentIntensity = 0.14;
+    scene.environmentIntensity = 0.08;
     pmrem.dispose();
   }
 
   const wards = buildWards(scene, high);
-  return { windowMat, clockHands, altarLight, lampLights, textures: textures.all, environment, wards };
+  return { windowMat, clockHands, altarLight, lampLights, textures: textures.all, environment, wards, doors, porchLights };
 }
 
 function createMaterials(tex: SuburbTextures): Record<string, THREE.MeshStandardMaterial> {
@@ -346,7 +374,9 @@ function buildBlock(
   windows: THREE.BufferGeometry[],
 ): void {
   const face = orient(block);
+  if (block.interior) addDoorBulb(windows, face, block);
   const tint = new THREE.Color(style.tint);
+  if (style.wall === "siding") tint.multiplyScalar(0.38);
   const wall = mats[style.wall]!;
   const h = block.h;
   if (block.kind === "tower") {
@@ -378,7 +408,11 @@ function buildBlock(
     addRoof(bucket, mats.shingle!, face, block, h, style.rise, 0.4, "front", new THREE.Color(0x3a3438));
     addPane(windows, face, block, -0.7, h * 0.48, face.depth * 0.5 + 0.02, 0.55, h * 0.42, 0.08, "street", [3.4, 0.45, 0.55]);
     addPane(windows, face, block, 0.85, h * 0.48, face.depth * 0.5 + 0.02, 0.55, h * 0.42, 0.08, "street", [0.45, 0.7, 3.2]);
-    put(bucket, mats.wood!, face, block, 1.15, 2.4, 0.12, 0, 1.4, face.depth * 0.5 + 0.02, new THREE.Color(0x2a211c));
+    if (!block.interior) {
+      put(bucket, mats.wood!, face, block, 1.15, 2.4, 0.12, 0, 1.4, face.depth * 0.5 + 0.02, new THREE.Color(0x2a211c));
+    } else {
+      put(bucket, mats.wood!, face, block, face.width * 0.7, 0.06, face.depth * 0.7, 0, 0.08, 0, new THREE.Color(0x8a6848));
+    }
     steeple(bucket, mats, windows, face, block, h);
     return;
   }
@@ -402,7 +436,11 @@ function buildBlock(
       new THREE.Color(0x8e2e32),
     );
     addWindowsRow(windows, face, block, face.depth * 0.5 + 0.06, awningY * 0.55, 2.4, [0.35, 2.6, 2.4], 1.15, 0.7);
-    put(bucket, mats.wood!, face, block, 1.05, 2.05, 0.1, 0, 1.2, face.depth * 0.5 + 0.05, new THREE.Color(0x241c18));
+    if (!block.interior) {
+      put(bucket, mats.wood!, face, block, 1.05, 2.05, 0.1, 0, 1.2, face.depth * 0.5 + 0.05, new THREE.Color(0x241c18));
+    } else {
+      put(bucket, mats.wood!, face, block, face.width * 0.7, 0.06, face.depth * 0.7, 0, 0.08, 0, new THREE.Color(0x8a6848));
+    }
     neonEat(windows, face, block, h + 0.7);
     return;
   }
@@ -412,6 +450,7 @@ function buildBlock(
   const bodyD = face.depth - porchD;
   if (block.interior) {
     buildShell(bucket, wall, face, block, h * 0.94, tint);
+    put(bucket, mats.wood!, face, block, face.width * 0.72, 0.06, face.depth * 0.72, 0, 0.08, 0, new THREE.Color(0x8a6848));
   } else {
     put(bucket, wall, face, block, face.width * 0.98, porchH - 0.16, bodyD, 0, (porchH - 0.16) * 0.5 + 0.16, bodyN, tint);
     if (two) {
@@ -434,8 +473,10 @@ function buildBlock(
     put(bucket, mats.concrete!, face, block, 1.15, 0.08, 0.42, 0, 0.2, face.depth * 0.5 - porchD * 0.35, CONCRETE);
   }
   const frontN = porchD > 0.2 ? face.depth * 0.5 - porchD + 0.05 : face.depth * 0.5 + 0.05;
+  if (style.wall === "siding") addClapboardTrim(bucket, mats, face, block, h);
   addFacadeWindows(windows, face, block, frontN, porchH, two, h, [3.1, 1.85, 0.72]);
   addSideWindows(windows, face, block, porchD, two, porchH, h);
+  if (block.kind === "radio") buildRadioMast(bucket, mats, windows, block);
   addRoof(bucket, mats.shingle!, face, block, h, style.rise, 0.42, style.roof === "front" ? "front" : "eave", new THREE.Color(0x6e666c));
   const ridgeLong = style.roof === "front" ? face.depth : face.width;
   put(
@@ -883,6 +924,160 @@ function buildAltar(
   }
 }
 
+function addClapboardTrim(
+  bucket: Bucket,
+  mats: Record<string, THREE.MeshStandardMaterial>,
+  face: Front,
+  block: Block,
+  h: number,
+): void {
+  const trim = new THREE.Color(0xf4efe6);
+  for (const s of [-1, 1]) {
+    put(bucket, mats.paint!, face, block, 0.12, h * 0.96, 0.14, s * (face.width * 0.48), h * 0.5, face.depth * 0.46, trim);
+  }
+  put(bucket, mats.paint!, face, block, face.width * 0.98, 0.1, 0.16, 0, h * 0.97, face.depth * 0.46, trim);
+}
+
+function addLampShaft(scene: THREE.Scene, x: number, y: number, z: number, opacity = 0.1): void {
+  const shaft = new THREE.Mesh(
+    new THREE.ConeGeometry(2.15, 5.2, 8, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0xffb46a,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    }),
+  );
+  shaft.rotation.x = Math.PI;
+  shaft.position.set(x, y - 2.15, z);
+  shaft.castShadow = false;
+  shaft.name = "lamp-shaft";
+  scene.add(shaft);
+}
+
+function buildRoutes(mats: Record<string, THREE.MeshStandardMaterial>, bucket: Bucket, windows: THREE.BufferGeometry[]): void {
+  const iron = new THREE.Color(0x2a2624);
+  for (const sc of SHORTCUTS) {
+    for (const [x, z] of [
+      [sc.ax, sc.az],
+      [sc.bx, sc.bz],
+    ] as const) {
+      if (sc.kind === "fence") {
+        const post = new THREE.BoxGeometry(0.08, 1.05, 0.08);
+        post.translate(x, 0.52, z);
+        bucket.add(mats.wood!, stamp(post, WOOD));
+        const rail = new THREE.BoxGeometry(1.4, 0.06, 0.06);
+        rail.translate(x, 0.85, z);
+        bucket.add(mats.wood!, stamp(rail, WOOD));
+      } else if (sc.kind === "sewer") {
+        const grate = new THREE.CylinderGeometry(0.55, 0.55, 0.06, 8);
+        grate.translate(x, 0.04, z);
+        bucket.add(mats.metal!, stamp(grate, iron));
+      } else {
+        const hatch = new THREE.BoxGeometry(0.9, 0.08, 0.7);
+        hatch.translate(x, 0.06, z);
+        bucket.add(mats.wood!, stamp(hatch, new THREE.Color(0x3a2c24)));
+      }
+    }
+  }
+  for (const car of CAR_SPOTS) {
+    const bulb = new THREE.SphereGeometry(0.08, 6, 5);
+    bulb.translate(car.x, 0.85, car.z);
+    windows.push(paintGlow(bulb, 3.2, 1.8, 0.7));
+  }
+}
+
+function addDoorBulb(windows: THREE.BufferGeometry[], face: Front, block: Block): void {
+  const bulb = new THREE.SphereGeometry(0.09, 8, 6);
+  const y = groundY(block.x, block.z) + 2.4;
+  bulb.translate(block.x + face.nx * (face.depth * 0.5 + 0.12), y, block.z + face.nz * (face.depth * 0.5 + 0.12));
+  windows.push(paintGlow(bulb, 4.8, 2.6, 1.05));
+}
+
+function buildRadioMast(
+  bucket: Bucket,
+  mats: Record<string, THREE.MeshStandardMaterial>,
+  windows: THREE.BufferGeometry[],
+  block: Block,
+): void {
+  const y0 = groundY(block.x, block.z) + block.h;
+  const mast = new THREE.CylinderGeometry(0.07, 0.11, 6.4, 6);
+  mast.translate(block.x, y0 + 3.1, block.z);
+  bucket.add(mats.metal!, stamp(mast, DARK));
+  const dish = new THREE.CylinderGeometry(0.85, 0.85, 0.08, 10);
+  dish.rotateX(0.7);
+  dish.translate(block.x + 0.35, y0 + 5.5, block.z);
+  bucket.add(mats.metal!, stamp(dish, new THREE.Color(0x6a6248)));
+  const blink = new THREE.SphereGeometry(0.12, 8, 6);
+  blink.translate(block.x, y0 + 6.5, block.z);
+  windows.push(paintGlow(blink, 5.2, 0.28, 0.18));
+}
+
+function buildDoors(scene: THREE.Scene): Array<{ id: string; pivot: THREE.Group; latch: THREE.Mesh; bar: THREE.Object3D; rim: THREE.Group; rimMat: THREE.MeshBasicMaterial }> {
+  const paint = new THREE.MeshStandardMaterial({ color: 0xf3efe6, roughness: 0.48, metalness: 0.04 });
+  const trim = new THREE.MeshStandardMaterial({ color: 0xe4d8c4, roughness: 0.62, metalness: 0.02 });
+  const board = new THREE.MeshStandardMaterial({ color: 0x6a4a32, roughness: 0.86, metalness: 0.02 });
+  const doors: Array<{ id: string; pivot: THREE.Group; latch: THREE.Mesh; bar: THREE.Object3D; rim: THREE.Group; rimMat: THREE.MeshBasicMaterial }> = [];
+  for (const pose of doorPoses()) {
+    const pivot = new THREE.Group();
+    pivot.position.set(pose.x, groundY(pose.x, pose.z), pose.z);
+    pivot.rotation.y = pose.yaw;
+    pivot.userData.yaw = pose.yaw;
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2.16, 0.07), paint);
+    slab.position.set(0.76, 1.14, 0);
+    slab.castShadow = true;
+    pivot.add(slab);
+    for (const py of [0.48, 1.12, 1.76]) {
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.5, 0.025), trim);
+      panel.position.set(0.76, py, 0.04);
+      pivot.add(panel);
+    }
+    const iron = new THREE.MeshStandardMaterial({
+      color: 0xc9c2b4,
+      roughness: 0.35,
+      metalness: 0.72,
+      emissive: 0x000000,
+      emissiveIntensity: 0,
+    });
+    const latch = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.18, 0.08), iron);
+    latch.position.set(1.38, 1.16, 0.08);
+    const shackle = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.015, 6, 8, Math.PI), iron);
+    shackle.position.set(1.38, 1.3, 0.08);
+    shackle.rotation.x = Math.PI;
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.28, 0.12, 0.1), board);
+    bar.position.set(0.78, 1.42, 0.1);
+    bar.visible = false;
+    const rimMat = new THREE.MeshBasicMaterial({
+      color: 0xf0e6d8,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const rim = new THREE.Group();
+    const frameW = 1.62;
+    const frameH = 2.28;
+    const thick = 0.05;
+    for (const [gw, gh, px, py] of [
+      [frameW, thick, 0.76, 1.14 + frameH / 2],
+      [frameW, thick, 0.76, 1.14 - frameH / 2],
+      [thick, frameH, 0.76 - frameW / 2, 1.14],
+      [thick, frameH, 0.76 + frameW / 2, 1.14],
+    ] as const) {
+      const edge = new THREE.Mesh(new THREE.BoxGeometry(gw, gh, 0.025), rimMat);
+      edge.position.set(px, py, 0.07);
+      rim.add(edge);
+    }
+    rim.visible = false;
+    pivot.add(latch, shackle, bar, rim);
+    scene.add(pivot);
+    doors.push({ id: pose.id, pivot, latch, bar, rim, rimMat });
+  }
+  return doors;
+}
+
 function lampHead(x: number, z: number): [number, number] {
   const len = Math.hypot(x, z) || 1;
   return [x + (-x / len) * 0.7, z + (-z / len) * 0.7];
@@ -923,6 +1118,7 @@ function buildTrees(scene: THREE.Scene, mats: Record<string, THREE.MeshStandardM
   const rings = [
     { count: high ? 16 : 10, r: 33.4 },
     { count: high ? 18 : 11, r: 56 },
+    { count: high ? 14 : 8, r: 68 },
   ];
   for (const ring of rings) {
     for (let i = 0; i < ring.count; i++) {
@@ -1058,6 +1254,16 @@ function buildProps(
     const box = new THREE.BoxGeometry(0.28, 0.22, 0.18);
     box.translate(x, 0.95, z);
     bucket.add(mats.paint!, stamp(box, new THREE.Color(0x4a4038)));
+    if (BLOCKS.indexOf(block) % 2 === 0 && !hitsBlock(x + face.tx * 1.1, z + face.tz * 1.1, 0.3)) {
+      const cx = x + face.tx * 1.15;
+      const cz = z + face.tz * 1.15;
+      const seat = new THREE.BoxGeometry(0.48, 0.06, 0.46);
+      seat.translate(cx, 0.42, cz);
+      bucket.add(mats.wood!, stamp(seat, WOOD));
+      const back = new THREE.BoxGeometry(0.48, 0.46, 0.05);
+      back.translate(cx - face.nx * 0.18, 0.68, cz - face.nz * 0.18);
+      bucket.add(mats.wood!, stamp(back, WOOD));
+    }
   }
   const bins: Array<[number, number]> = [
     [-18, -2],

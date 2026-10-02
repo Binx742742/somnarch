@@ -153,17 +153,17 @@ export function makeFigure(coatHex: number, monster: boolean, variant = 0): Figu
       emissive: 0x5a1610,
       emissiveIntensity: 0.55,
     });
-    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.28, 6), dark);
-    handle.position.set(0, -armLen - 0.02, 0.02);
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.72, 6), dark);
+    handle.position.set(0.02, -armLen - 0.16, 0.04);
     armR.add(handle);
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.46, 0.035), steel);
-    blade.position.set(0.12, -armLen - 0.22, 0.06);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.62, 0.04), steel);
+    blade.position.set(0.16, -armLen - 0.52, 0.08);
     armR.add(blade);
     const edge = new THREE.Mesh(
-      new THREE.BoxGeometry(0.02, 0.42, 0.01),
+      new THREE.BoxGeometry(0.025, 0.56, 0.012),
       new THREE.MeshBasicMaterial({ color: 0xffe1c8 }),
     );
-    edge.position.set(0.3, -armLen - 0.22, 0.08);
+    edge.position.set(0.4, -armLen - 0.52, 0.1);
     armR.add(edge);
     const thread = new THREE.MeshStandardMaterial({
       color: 0xe8dcc8,
@@ -316,6 +316,11 @@ export function makeLoot(kind: string): THREE.Group {
       new THREE.MeshStandardMaterial({ color: 0xd8fff4, emissive: 0x7dffe8, emissiveIntensity: 0.6, roughness: 0.25 }),
     );
     token.rotation.z = 0.4;
+  } else if (kind === "phone") {
+    token = new THREE.Mesh(
+      new THREE.BoxGeometry(0.1, 0.18, 0.04),
+      new THREE.MeshStandardMaterial({ color: 0x1a1816, emissive: 0xffb46a, emissiveIntensity: 0.7, roughness: 0.4 }),
+    );
   } else if (kind === "bandage") {
     token = new THREE.Mesh(
       new THREE.BoxGeometry(0.22, 0.08, 0.16),

@@ -17,7 +17,7 @@ type Strip = { axis: 0 | 1; fixed: number; half: number; min: number; max: numbe
 
 /** axis 0: runs along X, `fixed` is Z. axis 1: runs along Z, `fixed` is X. */
 export const STRIPS: Strip[] = [
-  { axis: 0, fixed: -5.5, half: ROAD.spokeHalf, min: -52, max: 54 },
+  { axis: 0, fixed: -5.5, half: ROAD.spokeHalf, min: -64, max: 66 },
   { axis: 1, fixed: 0, half: ROAD.spokeHalf, min: 2.4, max: 38 },
   { axis: 1, fixed: -4.15, half: 2.2, min: -16.2, max: -2.6 },
   { axis: 0, fixed: -12.35, half: 1.85, min: -8.4, max: 9.4 },
@@ -26,6 +26,8 @@ export const STRIPS: Strip[] = [
   { axis: 1, fixed: 40, half: 2.15, min: -38, max: 26 },
   { axis: 0, fixed: 36, half: 2.15, min: -28, max: 30 },
   { axis: 1, fixed: 2, half: 2.05, min: -42, max: -26 },
+  { axis: 1, fixed: -54, half: 2.05, min: -32, max: 28 },
+  { axis: 1, fixed: 56, half: 2.05, min: -40, max: 16 },
 ];
 
 export const DIRT: Strip[] = [

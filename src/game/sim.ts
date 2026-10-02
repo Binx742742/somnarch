@@ -1,19 +1,24 @@
 import {
   BLOCKS,
+  CAR_SPOTS,
   DREAMER_SPAWNS,
+  LAMPS,
   LOOT_SPOTS,
   MONSTER_SPAWN,
   PATROL,
+  SHORTCUTS,
   WARD_SPOTS,
+  doorSpots,
   lineBlocked,
   moveCircle,
   outside,
+  setLatchedDoors,
   spotClear,
 } from "./level";
 
 export type Role = "dreamer" | "somnarch";
 export type ItemKind = "bandage" | "adrenaline" | "clock";
-export type PickupKind = "fragment" | ItemKind;
+export type PickupKind = "fragment" | "phone" | ItemKind;
 
 export type Input = {
   ix: number;
@@ -53,8 +58,8 @@ export type Actor = {
   dodgeT: number;
   stun: number;
   iframes: number;
-  /** 0 none, 1 wake, 2 revive, 3 kindle hearth, 4 snuff hearth */
-  channel: 0 | 1 | 2 | 3 | 4;
+  /** 0 none, 1 wake, 2 revive, 3 kindle, 4 snuff, 5 latch, 6 break, 7 shortcut, 8 crank */
+  channel: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   channelT: number;
   channelTarget: string;
   items: ItemKind[];
@@ -76,7 +81,19 @@ export type Actor = {
   huntX: number;
   huntZ: number;
   huntT: number;
+  /** Dreamer dread. High fear is loud and spends stamina regen. */
+  fear: number;
+  /** Somnarch watch. A full stalk makes the next cleave heavier. */
+  stalk: number;
+  /** Car-crank speed. */
+  burstT: number;
+  snareCd: number;
+  sawLight: boolean;
+  usedReset: boolean;
 };
+
+export type Snare = { id: string; x: number; z: number };
+export type Car = { id: string; x: number; z: number; cd: number };
 
 export type Pickup = {
   id: string;
@@ -94,12 +111,27 @@ export type Ward = {
   lit: boolean;
 };
 
+export type Door = {
+  id: string;
+  x: number;
+  z: number;
+  latched: boolean;
+  hits: number;
+  /** Seconds until the latch can rattle again. */
+  rattle: number;
+};
+
 export type Match = {
   seed: number;
   time: number;
   actors: Actor[];
   pickups: Pickup[];
   wards: Ward[];
+  doors: Door[];
+  snares: Snare[];
+  cars: Car[];
+  phones: number;
+  taughtLatch: boolean;
   phase: "play" | "win" | "lose";
   log: string[];
   banner: string;
@@ -118,6 +150,7 @@ export type SimEvent =
   | { type: "ward" }
   | { type: "snuff" }
   | { type: "stitch" }
+  | { type: "door"; broken: boolean }
   | { type: "win" }
   | { type: "lose" };
 
@@ -129,6 +162,12 @@ const WAKE_TIME = 2.2;
 const REVIVE_TIME = 1.9;
 const WARD_TIME = 3.35;
 const SNUFF_TIME = 2.45;
+const LATCH_TIME = 1.15;
+const BREAK_TIME = 2.1;
+const DOOR_HITS = 3;
+const DOOR_R = 1.62;
+const OPEN_TIME = 150;
+const HOP_R = 1.7;
 const ALTAR_R = 3.35;
 const WARD_R = 2.15;
 const TETHER_R = 4.7;
@@ -200,6 +239,12 @@ function blankActor(partial: Pick<Actor, "id" | "name" | "role" | "bot" | "x" | 
     huntX: 0,
     huntZ: 0,
     huntT: 0,
+    fear: 0,
+    stalk: 0,
+    burstT: 0,
+    snareCd: 0,
+    sawLight: false,
+    usedReset: false,
   };
 }
 
@@ -261,6 +306,9 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
     "bandage",
     "adrenaline",
     "clock",
+    "phone",
+    "phone",
+    "phone",
   ];
   const pickups: Pickup[] = [];
   for (let i = 0; i < plan.length && i < spots.length; i++) {
@@ -280,10 +328,15 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
     actors,
     pickups,
     wards: WARD_SPOTS.map((w) => ({ ...w, lit: false })),
+    doors: doorSpots().map((d) => ({ ...d, latched: false, hits: 0, rattle: 0 })),
+    snares: [],
+    cars: CAR_SPOTS.filter((c) => spotClear(c.x, c.z)).map((c) => ({ ...c, cd: 0 })),
+    phones: 0,
+    taughtLatch: false,
     phase: "play",
-    log: ["The neighborhood dreams. Latch-keys, then the three hearths."],
-    banner: "Four latch-keys. Wake at the clock. Kindle the hearths.",
-    bannerT: 4,
+    log: ["The far yards are quiet. Learn the porches before he crosses town."],
+    banner: "Find a porch light. Keys, then the hearths. The butcher is still out.",
+    bannerT: 5.5,
   };
 }
 
@@ -298,6 +351,11 @@ export function allLivingLucid(m: Match): boolean {
 
 export function monsterOf(m: Match): Actor | undefined {
   return m.actors.find((a) => a.role === "somnarch");
+}
+
+function clockLabel(t: number): string {
+  const s = Math.max(0, Math.floor(t));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
 function say(m: Match, text: string): void {
@@ -332,6 +390,8 @@ function decay(a: Actor, dt: number): void {
   a.markT = Math.max(0, a.markT - dt);
   a.kitCd = Math.max(0, a.kitCd - dt);
   a.huntT = Math.max(0, a.huntT - dt);
+  a.burstT = Math.max(0, (a.burstT || 0) - dt);
+  a.snareCd = Math.max(0, (a.snareCd || 0) - dt);
   if (a.role === "dreamer" && !a.dead && !a.downed) {
     const sprinting = a.spd > 6.2 && a.dodgeT <= 0;
     a.nerve = Math.max(0, Math.min(100, a.nerve + (sprinting ? -10 : 11) * dt));
@@ -369,6 +429,7 @@ function locomotion(
   wz: number,
   dt: number,
   sprint: boolean,
+  leash = false,
 ): void {
   const monster = a.role === "somnarch";
   let moving = Math.hypot(wx, wz) > 0.05;
@@ -394,8 +455,12 @@ function locomotion(
     }
   }
 
-  let top = monster ? 5.55 : 4.45;
-  if (sprint && (monster || a.stamina > 1) && a.dodgeT <= 0) top *= 1.56;
+  let top = monster ? 4.25 : 4.3;
+  const stalking = monster && a.stalk > 28 && !sprint && a.dodgeT <= 0 && !leash;
+  if (leash) top = 3.05;
+  else if (stalking) top = 2.4;
+  if (!leash && sprint && !stalking && (monster || a.stamina > 1) && a.dodgeT <= 0) top *= monster ? 1.72 : 1.56;
+  if (!monster && a.burstT > 0) top *= 1.9;
   if (a.buffT > 0) top *= 1.16;
   if (a.lucid) top *= 1.05;
   if (a.dodgeT > 0) top = monster ? 12.4 : 11.2;
@@ -407,7 +472,8 @@ function locomotion(
     a.stamina = Math.max(0, a.stamina - 24 * dt);
     if (a.veilT <= 0) a.hearT = 0.35;
   } else if (!monster) {
-    a.stamina = Math.min(100, a.stamina + 15 * dt);
+    const calm = 1 - Math.min(0.7, a.fear / 140);
+    a.stamina = Math.min(100, a.stamina + 15 * dt * calm);
   } else {
     a.stamina = 100;
   }
@@ -523,7 +589,7 @@ function hurtDreamer(m: Match, a: Actor, amount: number, events: SimEvent[]): vo
   if (a.hp <= 0) {
     a.hp = 0;
     a.downed = true;
-    a.downT = 18;
+    a.downT = m.phones >= 2 ? 56 : 42;
     a.spd = 0;
     say(m, `${a.name} is bleeding out in the dream.`);
     events.push({ type: "down", who: a.id });
@@ -541,7 +607,7 @@ function killDreamer(m: Match, a: Actor, events: SimEvent[]): void {
   const live = livingDreamers(m);
   if (live.length === 0 && m.phase === "play") {
     m.phase = "lose";
-    say(m, "The cul-de-sac keeps every soul.");
+    say(m, `The cul-de-sac keeps every soul. ${clockLabel(m.time)}.`);
     events.push({ type: "lose" });
   }
 }
@@ -565,7 +631,7 @@ function damageMonster(m: Match, amount: number, events: SimEvent[]): void {
       mon.hp = 0;
       mon.dead = true;
       m.phase = "win";
-      say(m, "The Somnarch unravels. The neighborhood wakes.");
+      say(m, `The Somnarch unravels. Awake at ${clockLabel(m.time)}.`);
       events.push({ type: "win" });
     } else {
       mon.hp = 64;
@@ -584,6 +650,11 @@ function tryPickup(m: Match, a: Actor, events: SimEvent[]): void {
       p.taken = true;
       a.fragments += 1;
       say(m, `${a.name} latched a key (${a.fragments}/${WAKE_NEED}).`);
+      events.push({ type: "pick", who: a.id, kind: p.kind });
+    } else if (p.kind === "phone") {
+      p.taken = true;
+      m.phones += 1;
+      say(m, `${a.name} found a phone piece (${m.phones}/3).`);
       events.push({ type: "pick", who: a.id, kind: p.kind });
     } else if (a.items.length < 3) {
       p.taken = true;
@@ -679,6 +750,40 @@ function tether(m: Match, a: Actor, events: SimEvent[]): void {
   }
 }
 
+function nearestDoor(m: Match, a: Actor, latched: boolean): Door | null {
+  let best: Door | null = null;
+  let bestD = DOOR_R;
+  for (const door of m.doors) {
+    if (door.latched !== latched) continue;
+    const d = Math.hypot(a.x - door.x, a.z - door.z);
+    if (d < bestD) {
+      bestD = d;
+      best = door;
+    }
+  }
+  return best;
+}
+
+function syncDoors(m: Match): void {
+  setLatchedDoors(m.doors.filter((d) => d.latched).map((d) => d.id));
+}
+
+function breakDoor(m: Match, a: Actor, events: SimEvent[]): void {
+  const door = nearestDoor(m, a, true);
+  if (!door) return;
+  if (!inArc(a.x, a.z, a.yaw, door.x, door.z, DOOR_R + 0.2, 1.4)) return;
+  door.hits += 1;
+  if (door.hits >= DOOR_HITS) {
+    door.latched = false;
+    door.hits = 0;
+    syncDoors(m);
+    say(m, `The Somnarch broke the ${door.id} latch.`);
+    events.push({ type: "door", broken: true });
+  } else {
+    events.push({ type: "door", broken: false });
+  }
+}
+
 function nearestWard(m: Match, a: Actor, lit: boolean): Ward | null {
   let best: Ward | null = null;
   let bestD = WARD_R;
@@ -693,6 +798,66 @@ function nearestWard(m: Match, a: Actor, lit: boolean): Ward | null {
   return best;
 }
 
+function nearestShortcut(a: Actor): { sc: (typeof SHORTCUTS)[number]; fromA: boolean } | null {
+  let best: { sc: (typeof SHORTCUTS)[number]; fromA: boolean } | null = null;
+  let bestD = HOP_R;
+  for (const sc of SHORTCUTS) {
+    if (a.role === "somnarch" && sc.kind !== "cellar") continue;
+    const da = Math.hypot(a.x - sc.ax, a.z - sc.az);
+    const db = Math.hypot(a.x - sc.bx, a.z - sc.bz);
+    const d = Math.min(da, db);
+    if (d < bestD) {
+      bestD = d;
+      best = { sc, fromA: da <= db };
+    }
+  }
+  return best;
+}
+
+function hopSeconds(a: Actor, kind: "fence" | "sewer" | "cellar"): number {
+  if (a.role === "somnarch") return 2.4;
+  if (kind === "fence") return 0.5;
+  return 0.8;
+}
+
+function runShortcut(m: Match, a: Actor, hop: { sc: (typeof SHORTCUTS)[number]; fromA: boolean }, dt: number): void {
+  const key = `${hop.sc.id}:${hop.fromA ? "a" : "b"}`;
+  if (a.channel !== 7 || a.channelTarget !== key) {
+    a.channel = 7;
+    a.channelTarget = key;
+    a.channelT = 0;
+  }
+  a.channelT += dt;
+  if (a.channelT < hopSeconds(a, hop.sc.kind)) return;
+  const dest = hop.fromA ? { x: hop.sc.bx, z: hop.sc.bz } : { x: hop.sc.ax, z: hop.sc.az };
+  a.x = dest.x;
+  a.z = dest.z;
+  a.vx = 0;
+  a.vz = 0;
+  a.iframes = Math.max(a.iframes, 0.6);
+  a.hearT = Math.max(a.hearT, 1.05);
+  a.usedReset = true;
+  a.channel = 0;
+  a.channelT = 0;
+  const verb = hop.sc.kind === "fence" ? "vaulted a fence" : hop.sc.kind === "sewer" ? "slipped a drain" : "took the cellar";
+  say(m, `${a.name} ${verb}.`);
+}
+
+function nearestCar(m: Match, a: Actor): Car | null {
+  if (a.role !== "dreamer") return null;
+  let best: Car | null = null;
+  let bestD = HOP_R;
+  for (const car of m.cars) {
+    if (car.cd > 0) continue;
+    const d = Math.hypot(a.x - car.x, a.z - car.z);
+    if (d < bestD) {
+      bestD = d;
+      best = car;
+    }
+  }
+  return best;
+}
+
 function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: SimEvent[]): void {
   if (!held || a.dead || a.stun > 0 || a.downed) {
     a.channel = 0;
@@ -700,24 +865,53 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
     return;
   }
   if (a.role === "somnarch") {
-    const ward = nearestWard(m, a, true);
-    if (!ward) {
-      a.channel = 0;
-      a.channelT = 0;
+    const cellar = nearestShortcut(a);
+    if (cellar) {
+      runShortcut(m, a, cellar, dt);
       return;
     }
-    if (a.channel !== 4 || a.channelTarget !== ward.id) {
-      a.channel = 4;
-      a.channelTarget = ward.id;
-      a.channelT = 0;
+    const door = nearestDoor(m, a, true);
+    if (door) {
+      if (a.channel !== 6 || a.channelTarget !== door.id) {
+        a.channel = 6;
+        a.channelTarget = door.id;
+        a.channelT = 0;
+      }
+      a.channelT += dt;
+      if (a.channelT >= BREAK_TIME) {
+        door.latched = false;
+        door.hits = 0;
+        a.channel = 0;
+        a.channelT = 0;
+        syncDoors(m);
+        say(m, `The Somnarch forced the ${door.id} door.`);
+        events.push({ type: "door", broken: true });
+      }
+      return;
     }
-    a.channelT += dt;
-    if (a.channelT >= SNUFF_TIME) {
-      ward.lit = false;
-      a.channel = 0;
-      a.channelT = 0;
-      say(m, `The Somnarch smothered the ${ward.name}.`);
-      events.push({ type: "snuff" });
+    const ward = nearestWard(m, a, true);
+    if (ward) {
+      if (a.channel !== 4 || a.channelTarget !== ward.id) {
+        a.channel = 4;
+        a.channelTarget = ward.id;
+        a.channelT = 0;
+      }
+      a.channelT += dt;
+      if (a.channelT >= SNUFF_TIME) {
+        ward.lit = false;
+        a.channel = 0;
+        a.channelT = 0;
+        say(m, `The Somnarch smothered the ${ward.name}.`);
+        events.push({ type: "snuff" });
+      }
+      return;
+    }
+    a.channel = 0;
+    a.channelT = 0;
+    if (a.snareCd <= 0 && m.snares.length < 2) {
+      m.snares.push({ id: `snare-${m.snares.length}-${Math.floor(m.time * 10)}`, x: a.x, z: a.z });
+      a.snareCd = 16;
+      say(m, "The Somnarch strung a thread across the yard.");
     }
     return;
   }
@@ -738,6 +932,61 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
       a.channelT = 0;
       say(m, `${a.name} dragged ${downed.name} back to their feet.`);
     }
+    return;
+  }
+  const hop = nearestShortcut(a);
+  if (hop) {
+    runShortcut(m, a, hop, dt);
+    return;
+  }
+  const car = nearestCar(m, a);
+  if (car) {
+    if (a.channel !== 8 || a.channelTarget !== car.id) {
+      a.channel = 8;
+      a.channelTarget = car.id;
+      a.channelT = 0;
+    }
+    a.channelT += dt;
+    if (a.channelT >= 1.15) {
+      car.cd = 42;
+      a.burstT = 3.4;
+      a.hearT = Math.max(a.hearT, 1.6);
+      a.usedReset = true;
+      a.channel = 0;
+      a.channelT = 0;
+      say(m, `${a.name} cranked a car and tore down the street.`);
+    }
+    return;
+  }
+  const threat = monsterOf(m);
+  const openDoor = nearestDoor(m, a, false);
+  if (openDoor && threat && !threat.dead && dist(a, threat) < 16) {
+    if (a.channel !== 5 || a.channelTarget !== openDoor.id) {
+      a.channel = 5;
+      a.channelTarget = openDoor.id;
+      a.channelT = 0;
+    }
+    a.channelT += dt;
+    if (a.channelT >= LATCH_TIME) {
+      openDoor.latched = true;
+      openDoor.hits = 0;
+      a.channel = 0;
+      a.channelT = 0;
+      syncDoors(m);
+      say(m, `${a.name} latched the ${openDoor.id} door.`);
+      m.taughtLatch = true;
+      events.push({ type: "door", broken: false });
+    }
+    return;
+  }
+  const shutDoor = nearestDoor(m, a, true);
+  if (shutDoor) {
+    if (shutDoor.rattle <= 0) {
+      shutDoor.rattle = 0.52;
+      events.push({ type: "door", broken: false });
+    }
+    a.channel = 0;
+    a.channelT = 0;
     return;
   }
   if (a.lucid) {
@@ -794,13 +1043,19 @@ function strike(m: Match, a: Actor, aimYaw: number, events: SimEvent[]): void {
   events.push({ type: "swing", who: a.id });
   if (a.role === "somnarch") {
     a.attackCd = 0.96;
+    let hitSomeone = false;
     for (const o of m.actors) {
       if (o.role !== "dreamer" || o.dead) continue;
       const reach = o.downed ? 2.35 : 2.25;
       if (o.downed ? dist(a, o) <= reach : inArc(a.x, a.z, a.yaw, o.x, o.z, reach, 1.15)) {
-        hurtDreamer(m, o, o.downed ? 999 : 28, events);
+        if (m.time < OPEN_TIME && dist(a, o) > 2.2) continue;
+        const heavy = a.stalk >= 80 && !o.downed;
+        hurtDreamer(m, o, o.downed ? 999 : heavy ? 52 : 28, events);
+        if (heavy) a.stalk = 12;
+        hitSomeone = true;
       }
     }
+    if (!hitSomeone) breakDoor(m, a, events);
   } else if (a.lucid) {
     a.attackCd = 0.9;
     const mon = monsterOf(m);
@@ -928,7 +1183,7 @@ function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, event
   if (!a.dead && Math.hypot(input.ix, input.iz) < 0.2 && a.dodgeT <= 0 && a.stun <= 0 && a.channel === 0) {
     a.yaw = approachYaw(a.yaw, input.camYaw, 8, dt);
   }
-  locomotion(a, world.x, world.z, dt, input.sprint && a.stamina > 1);
+  locomotion(a, world.x, world.z, dt, input.sprint && a.stamina > 1, a.role === "somnarch" && m.time < OPEN_TIME);
   if (input.dashPulse) tryDash(a);
   if (input.usePulse) useItem(m, a, events);
   if (input.ablPulse) tryAbility(m, a, events);
@@ -960,12 +1215,12 @@ function tickBot(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
 }
 
 function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
-  if (m.time < 18) {
+  if (m.time < OPEN_TIME) {
     const p = PATROL[a.patrolI % PATROL.length]!;
     const gx = p[0] - a.x;
     const gz = p[1] - a.z;
     if (Math.hypot(gx, gz) < 1.6) a.patrolI += 1;
-    locomotion(a, gx, gz, dt, false);
+    locomotion(a, gx, gz, dt, false, true);
     return;
   }
   let best: Actor | null = null;
@@ -992,6 +1247,7 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
   let wx = 0;
   let wz = 0;
   let snuffing = false;
+  let forcing = false;
   const chase = best && (dist(a, best) < 18 || a.huntT <= 0);
   if (best && chase) {
     wx = best.x - a.x;
@@ -1007,6 +1263,11 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
       tryDash(a);
       a.botTap = 1.2;
     }
+    if (d > 5 && d < 12 && a.snareCd <= 0 && m.snares.length < 2 && a.botTap <= 0) {
+      m.snares.push({ id: `snare-b-${Math.floor(m.time * 10)}`, x: a.x, z: a.z });
+      a.snareCd = 16;
+      a.botTap = 2.2;
+    }
   } else if (a.huntT > 0) {
     wx = a.huntX - a.x;
     wz = a.huntZ - a.z;
@@ -1016,20 +1277,32 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
       snuffing = true;
     }
   } else {
-    const p = PATROL[a.patrolI % PATROL.length]!;
-    wx = p[0] - a.x;
-    wz = p[1] - a.z;
-    if (Math.hypot(wx, wz) < 1.6) a.patrolI += 1;
-    if (a.abilityCd <= 0 && m.time > 6 && a.botTap <= 0) {
-      tryAbility(m, a, events);
-      a.botTap = 2;
+    const door = nearestDoor(m, a, true);
+    if (door && dist(a, door) < 14) {
+      wx = door.x - a.x;
+      wz = door.z - a.z;
+      if (dist(a, door) < DOOR_R + 0.2) {
+        tickInteract(m, a, true, dt, events);
+        forcing = true;
+        if (a.attackCd <= 0) strike(m, a, yawForDirection(wx, wz), events);
+      }
+    } else {
+      const p = PATROL[a.patrolI % PATROL.length]!;
+      wx = p[0] - a.x;
+      wz = p[1] - a.z;
+      if (Math.hypot(wx, wz) < 1.6) a.patrolI += 1;
+      if (a.abilityCd <= 0 && m.time > 6 && a.botTap <= 0) {
+        tryAbility(m, a, events);
+        a.botTap = 2;
+      }
     }
   }
-  if (!snuffing && a.channel === 4) {
+  if (!snuffing && !forcing && (a.channel === 4 || a.channel === 6)) {
     a.channel = 0;
     a.channelT = 0;
   }
-  locomotion(a, wx, wz, dt, true);
+  const rushing = !!(best && dist(a, best) < 8);
+  locomotion(a, wx, wz, dt, rushing, false);
 }
 
 function botDreamer(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
@@ -1047,6 +1320,47 @@ function botDreamer(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
     wx = a.x - mon.x;
     wz = a.z - mon.z;
     sprint = true;
+    let escape: { x: number; z: number } | null = null;
+    let escapeGain = 0;
+    for (const sc of SHORTCUTS) {
+      const mouths = [
+        [
+          { x: sc.ax, z: sc.az },
+          { x: sc.bx, z: sc.bz },
+        ],
+        [
+          { x: sc.bx, z: sc.bz },
+          { x: sc.ax, z: sc.az },
+        ],
+      ] as const;
+      for (const [here, dest] of mouths) {
+        if (dist(a, here) > 14) continue;
+        const gain = dist(mon, dest) - md;
+        if (gain < 6 || gain < escapeGain) continue;
+        escapeGain = gain;
+        escape = here;
+      }
+    }
+    const car = nearestCar(m, a);
+    if (escape) {
+      wx = escape.x - a.x;
+      wz = escape.z - a.z;
+      sprint = dist(a, escape) > 1.6;
+      if (dist(a, escape) <= HOP_R) interact = true;
+    } else if (car && dist(a, car) < 9 && dist(mon, car) + 3 < md) {
+      wx = car.x - a.x;
+      wz = car.z - a.z;
+      sprint = true;
+      if (dist(a, car) <= HOP_R) interact = true;
+    } else {
+      const refuge = nearestDoor(m, a, false);
+      if (refuge && md < 16 && dist(a, refuge) < 10 && dist(mon, refuge) > dist(a, refuge)) {
+        wx = refuge.x - a.x;
+        wz = refuge.z - a.z;
+        sprint = dist(a, refuge) > 1.8;
+        if (dist(a, refuge) <= DOOR_R) interact = true;
+      }
+    }
     if (!a.lucid && a.abilityCd <= 0 && a.veilT <= 0 && a.nerve >= 34 && md < 9) tryAbility(m, a, events);
     if (md < 2.8 && a.dashCd <= 0) tryDash(a);
     if (md < 3.3 && a.lucid) strike(m, a, yawForDirection(mon.x - a.x, mon.z - a.z), events);
@@ -1155,9 +1469,53 @@ function nearestFragment(m: Match, a: Actor): Pickup | null {
   return best;
 }
 
+function tickSnares(m: Match): void {
+  if (m.snares.length === 0) return;
+  for (const a of m.actors) {
+    if (a.role !== "dreamer" || a.dead || a.downed) continue;
+    const i = m.snares.findIndex((s) => Math.hypot(a.x - s.x, a.z - s.z) < 0.95);
+    if (i < 0) continue;
+    m.snares.splice(i, 1);
+    a.stun = Math.max(a.stun, 1.35);
+    a.markT = Math.max(a.markT, 3);
+    a.hearT = Math.max(a.hearT, 0.45);
+    say(m, `${a.name} caught a thread.`);
+  }
+}
+
+function tickMood(m: Match, a: Actor, dt: number): void {
+  if (a.dead) return;
+  if (a.role === "dreamer") {
+    const mon = monsterOf(m);
+    let threat = 0;
+    if (mon && !mon.dead && a.veilT <= 0) {
+      const d = dist(a, mon);
+      const see = d < 14 && !lineBlocked(a.x, a.z, mon.x, mon.z);
+      if (see) threat = Math.max(threat, 1 - d / 14);
+      if (d < 6.5) threat = Math.max(threat, 0.72);
+      if (a.markT > 0) threat = Math.max(threat, 0.45);
+    }
+    const pull = a.lucid ? 1.8 : 1.15;
+    a.fear += (threat * 100 - a.fear) * (1 - Math.exp(-pull * dt));
+    if (a.fear > 74 && a.veilT <= 0) a.hearT = Math.max(a.hearT, 0.22);
+    return;
+  }
+  let watch = false;
+  for (const o of m.actors) {
+    if (o.role !== "dreamer" || o.dead || o.veilT > 0.2) continue;
+    const d = dist(a, o);
+    if (d > 2.2 && d < 18 && !lineBlocked(a.x, a.z, o.x, o.z)) watch = true;
+  }
+  if (watch && a.spd < 2.4) a.stalk = Math.min(100, a.stalk + 24 * dt);
+  else a.stalk = Math.max(0, a.stalk - (a.spd > 6 ? 16 : 7) * dt);
+}
+
 export function step(m: Match, inputs: Map<string, Input>, dt: number): SimEvent[] {
   if (m.phase !== "play") return [];
   const events: SimEvent[] = [];
+  for (const door of m.doors) door.rattle = Math.max(0, (door.rattle || 0) - dt);
+  for (const car of m.cars) car.cd = Math.max(0, car.cd - dt);
+  syncDoors(m);
   m.time += dt;
   m.bannerT = Math.max(0, m.bannerT - dt);
   for (const a of m.actors) {
@@ -1166,9 +1524,18 @@ export function step(m: Match, inputs: Map<string, Input>, dt: number): SimEvent
     if (a.dead) continue;
     if (a.bot) tickBot(m, a, dt, events);
     else tickHuman(m, a, inputs.get(a.id), dt, events);
+    tickMood(m, a, dt);
+    if (a.role === "dreamer" && !a.sawLight) {
+      for (const [x, z] of LAMPS) {
+        if (Math.hypot(a.x - x, a.z - z) < 3.5) a.sawLight = true;
+      }
+    }
     if (m.phase !== "play") break;
   }
-  if (m.phase === "play") separate(m);
+  if (m.phase === "play") {
+    tickSnares(m);
+    separate(m);
+  }
   return events;
 }
 
@@ -1181,12 +1548,12 @@ export function objectiveFor(m: Match, id: string): string {
   const hearthLine = `Hearths ${lit}/${m.wards.length}.`;
   if (me.role === "somnarch") {
     const left = livingDreamers(m).length;
-    return left > 0
-      ? `Stitch them under. ${left} still breathe. Snuff hearths. ${hearthLine}`
-      : "The neighborhood is yours.";
+    if (m.time < OPEN_TIME) return "They are still learning the streets.";
+    return left > 0 ? `${left} still breathe. Snuff any hearth that catches.` : "The neighborhood is yours.";
   }
   if (me.dead) return "You were stitched under. The others still dream.";
   if (me.downed) return "You are bleeding out. Call for a tether.";
+  if (m.time < OPEN_TIME && !me.lucid) return "He is still in the far yards. Find a porch light, then the keys.";
   if (!me.lucid) {
     if (me.fragments >= WAKE_NEED) return `Hold wake at the clock altar. ${hearthLine}`;
     return `Latch-keys ${me.fragments}/${WAKE_NEED}. Q veils. Wake, then kindle the hearths.`;
@@ -1202,16 +1569,36 @@ export function promptFor(m: Match, id: string): string {
   if (me.downed) return "Bleeding out";
   if (me.channel === 1) return "Waking";
   if (me.channel === 2) return "Reviving";
+  if (me.channel === 5) return "Latching the door";
+  if (me.channel === 6) return "Forcing the latch";
+  if (me.channel === 7) return "Slipping through";
+  if (me.channel === 8) return "Cranking";
+  const hop = nearestShortcut(me);
+  if (hop) {
+    if (hop.sc.kind === "fence") return "Vault";
+    if (hop.sc.kind === "sewer") return "Drain";
+    return "Cellar";
+  }
+  const car = nearestCar(m, me);
+  if (car) return "Crank";
   if (me.role === "somnarch") {
     const down = m.actors.find((a) => a.downed && dist(me, a) < 2.4);
     if (down) return "Strike to finish";
+    const latched = nearestDoor(m, me, true);
+    if (latched) return "Hold to force the latch";
     const litWard = nearestWard(m, me, true);
     if (litWard) return `Hold to snuff ${litWard.name}`;
+    if (me.stalk >= 80) return "Stalk ready — the next cleave is heavy";
     if (me.kitCd <= 0 && m.actors.some((a) => a.role === "dreamer" && !a.dead && dist(me, a) < 12)) return "R stitch";
     return "";
   }
   const down = nearestDowned(m, me);
   if (down) return `Hold to revive ${down.name}`;
+  const shut = nearestDoor(m, me, true);
+  if (shut) return "Latched";
+  const threat = monsterOf(m);
+  const openDoor = nearestDoor(m, me, false);
+  if (openDoor && threat && !threat.dead && dist(me, threat) < 16) return "Hold to latch the door";
   if (me.lucid) {
     const dark = nearestWard(m, me, false);
     if (dark) return `Hold to kindle ${dark.name}`;
@@ -1225,12 +1612,57 @@ export function promptFor(m: Match, id: string): string {
   return "";
 }
 
+export type CheckRow = { label: string; done: boolean };
+
+export function checklistFor(m: Match, id: string): CheckRow[] {
+  const me = m.actors.find((a) => a.id === id);
+  if (!me) return [];
+  if (me.role === "somnarch") {
+    const rows: CheckRow[] = m.actors
+      .filter((a) => a.role === "dreamer")
+      .map((a) => ({ label: a.name, done: a.dead }));
+    for (const w of m.wards) {
+      if (w.lit) rows.push({ label: `Snuff ${w.name}`, done: false });
+    }
+    if (m.phones >= 3) rows.push({ label: "The line is open", done: false });
+    return rows;
+  }
+  const rows: CheckRow[] = [
+    { label: "Find a porch light", done: me.sawLight },
+    { label: "Learn a way out", done: me.usedReset },
+    { label: "Latch a door", done: m.taughtLatch },
+    { label: `Latch-keys ${Math.min(me.fragments, WAKE_NEED)}/${WAKE_NEED}`, done: me.lucid || me.fragments >= WAKE_NEED },
+    { label: "Wake at the altar", done: me.lucid },
+    { label: `Phone line ${Math.min(m.phones, 3)}/3`, done: m.phones >= 3 },
+  ];
+  for (const w of m.wards) rows.push({ label: w.name, done: w.lit });
+  return rows;
+}
+
+/** Door under the interact prompt, if the padlock should sit on it. */
+export function promptDoor(m: Match, id: string): Door | null {
+  const me = m.actors.find((a) => a.id === id);
+  if (!me || me.dead || me.downed || m.phase !== "play") return null;
+  if (me.role === "somnarch") return nearestDoor(m, me, true);
+  const shut = nearestDoor(m, me, true);
+  if (shut) return shut;
+  const threat = monsterOf(m);
+  const door = nearestDoor(m, me, false);
+  if (door && threat && !threat.dead && dist(me, threat) < 16) return door;
+  return null;
+}
+
 export const RULES = {
   WAKE_NEED,
   WAKE_TIME,
   REVIVE_TIME,
   WARD_TIME,
   SNUFF_TIME,
+  LATCH_TIME,
+  BREAK_TIME,
+  HOP_TIME: 0.8,
+  CRANK_TIME: 1.15,
+  CELLAR_SLOW: 2.4,
   DREAMER_HP,
   MONSTER_HP,
   ALTAR_R,
@@ -1241,8 +1673,8 @@ export function monsterVisibleTo(viewer: Actor, mon: Actor): boolean {
   if (viewer.dead) return false;
   if (viewer.senseT > 0) return true;
   const d = dist(viewer, mon);
-  if (d < 8) return true;
-  if (d < 20 && !lineBlocked(viewer.x, viewer.z, mon.x, mon.z)) return true;
+  if (d < 3.6) return true;
+  if (d < 16 && !lineBlocked(viewer.x, viewer.z, mon.x, mon.z)) return true;
   return false;
 }
 

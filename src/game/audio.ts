@@ -108,6 +108,16 @@ export class DreamAudio {
     this.noise(140, 0.1, 0.12);
     this.tone(196, 0.16, "square", 0.04);
   }
+  door(broken: boolean): void {
+    if (broken) {
+      this.noise(90, 0.18, 0.16);
+      this.tone(92, 0.22, "sawtooth", 0.05);
+    } else {
+      this.noise(160, 0.05, 0.09);
+      this.tone(110, 0.07, "square", 0.04);
+      this.noise(90, 0.09, 0.06);
+    }
+  }
 
   private bed(): void {
     const ctx = this.ctx;

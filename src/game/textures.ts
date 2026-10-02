@@ -44,16 +44,16 @@ export type SuburbTextures = {
 
 export function createSuburbTextures(): SuburbTextures {
   const siding = makeCanvas(256, (ctx, s) => {
-    ctx.fillStyle = "#e6e6e6";
+    ctx.fillStyle = "#c4a07a";
     ctx.fillRect(0, 0, s, s);
     for (let y = 0; y < s; y += 22) {
-      const shade = 214 + ((y / 22) % 2) * 18;
-      ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
+      const shade = 168 + ((y / 22) % 2) * 22;
+      ctx.fillStyle = `rgb(${shade + 28},${shade},${shade - 36})`;
       ctx.fillRect(0, y, s, 19);
-      ctx.fillStyle = "#5c5c5c";
+      ctx.fillStyle = "#5c4636";
       ctx.fillRect(0, y + 19, s, 3);
     }
-    speck(ctx, s, 18);
+    speck(ctx, s, 16);
   });
 
   const brick = makeCanvas(256, (ctx, s) => {
