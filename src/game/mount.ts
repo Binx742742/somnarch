@@ -1,6 +1,6 @@
 import { P2PRoom, type PeerInfo } from "@/lib/multiplayer";
 import { DreamAudio } from "./audio";
-import { BOUNDARY, BLOCKS, moveCircle } from "./level";
+import { BOUNDARY, BLOCKS, groundY, moveCircle } from "./level";
 import { DreamRenderer, type RenderView } from "./renderer";
 import {
   RULES,
@@ -69,6 +69,7 @@ type SnapState = {
   bannerT: number;
   actors: Actor[];
   pickups: Match["pickups"];
+  wards?: Match["wards"];
 };
 
 const GAME_KEYS = new Set([
@@ -86,6 +87,7 @@ const GAME_KEYS = new Set([
   "KeyE",
   "KeyQ",
   "KeyF",
+  "KeyR",
 ]);
 
 function makeId(): string {
@@ -105,6 +107,7 @@ function emptyInput(yaw = 0): Input {
     usePulse: false,
     ablPulse: false,
     dashPulse: false,
+    kitPulse: false,
   };
 }
 
@@ -162,7 +165,7 @@ export class DreamSession {
   private lookDx = 0;
   private lookDy = 0;
   private mouse = false;
-  private prevDown = { use: false, abl: false, dash: false };
+  private prevDown = { use: false, abl: false, dash: false, kit: false };
   private localInput = emptyInput();
   private readonly touch = {
     ix: 0,
@@ -173,6 +176,7 @@ export class DreamSession {
     use: false,
     abl: false,
     dash: false,
+    kit: false,
   };
   private reduced = false;
   private raf = 0;
@@ -293,7 +297,7 @@ export class DreamSession {
     this.lookDy += dy;
   }
 
-  setTouchFlag(key: "sprint" | "atk" | "interact" | "use" | "abl" | "dash", down: boolean): void {
+  setTouchFlag(key: "sprint" | "atk" | "interact" | "use" | "abl" | "dash" | "kit", down: boolean): void {
     this.touch[key] = down;
   }
 
@@ -415,6 +419,7 @@ export class DreamSession {
     const useDown = this.down("KeyF") || this.touch.use || padUse;
     const ablDown = this.down("KeyQ") || this.touch.abl || padAbl;
     const dashDown = this.down("Space") || this.touch.dash || padDash;
+    const kitDown = this.down("KeyR") || this.touch.kit;
     const input = this.localInput;
     input.ix = ix;
     input.iz = iz;
@@ -425,7 +430,8 @@ export class DreamSession {
     input.usePulse = useDown && !this.prevDown.use;
     input.ablPulse = ablDown && !this.prevDown.abl;
     input.dashPulse = dashDown && !this.prevDown.dash;
-    this.prevDown = { use: useDown, abl: ablDown, dash: dashDown };
+    input.kitPulse = kitDown && !this.prevDown.kit;
+    this.prevDown = { use: useDown, abl: ablDown, dash: dashDown, kit: kitDown };
   }
 
   private inputMap(): Map<string, Input> {
@@ -481,6 +487,10 @@ export class DreamSession {
       else if (e.type === "down") this.audio.down();
       else if (e.type === "death") this.audio.death();
       else if (e.type === "stun") this.audio.stun();
+      else if (e.type === "veil") this.audio.veil();
+      else if (e.type === "ward") this.audio.ward();
+      else if (e.type === "snuff") this.audio.snuff();
+      else if (e.type === "stitch") this.audio.stitch();
     }
   }
 
@@ -541,6 +551,7 @@ export class DreamSession {
       viewerRole: me?.role ?? null,
       hidden,
       shake: this.impulse,
+      wards: this.match?.wards ?? [],
     };
   }
 
@@ -570,9 +581,14 @@ export class DreamSession {
     if (this.hud.stam) this.hud.stam.style.transform = `scaleX(${me.stamina / 100})`;
     setText(
       this.hud.keys,
-      me.role === "somnarch" ? "Bone and needle" : me.lucid ? "Lucid" : `Latch-keys ${me.fragments}/${RULES.WAKE_NEED}`,
+      me.role === "somnarch"
+        ? "Bone and needle"
+        : me.lucid
+          ? `Lucid · nerve ${Math.round(me.nerve)}`
+          : `Latch-keys ${me.fragments}/${RULES.WAKE_NEED} · nerve ${Math.round(me.nerve)}`,
     );
-    const channelMax = me.channel === 2 ? RULES.REVIVE_TIME : RULES.WAKE_TIME;
+    const channelMax =
+      me.channel === 2 ? RULES.REVIVE_TIME : me.channel === 3 ? RULES.WARD_TIME : me.channel === 4 ? RULES.SNUFF_TIME : RULES.WAKE_TIME;
     if (this.hud.channel) this.hud.channel.hidden = me.channel === 0;
     if (this.hud.channelFill) this.hud.channelFill.style.transform = `scaleX(${Math.min(1, me.channelT / channelMax)})`;
     if (this.hud.banner) {
@@ -590,9 +606,9 @@ export class DreamSession {
     }
     setText(this.hud.items, me.items.length ? me.items.map(itemLabel).join(" · ") : "Empty pockets");
     const cds = [
-      me.role === "dreamer" && me.lucid ? cd("Pulse", me.abilityCd) : me.role === "somnarch" ? cd("Sense", me.abilityCd) : "",
+      me.role === "somnarch" ? cd("Sense", me.abilityCd) : me.lucid ? cd("Pulse", me.abilityCd) : cd("Veil", me.abilityCd),
       cd("Dodge", me.dashCd),
-      me.lucid ? cd("Tether", me.tetherCd) : "",
+      me.role === "somnarch" ? cd("Stitch", me.kitCd) : me.lucid ? cd("Tether", me.tetherCd) : "",
     ].filter(Boolean);
     setText(this.hud.cds, cds.join("  "));
     const mon = monsterOf(this.match);
@@ -633,6 +649,10 @@ export class DreamSession {
       ctx.beginPath();
       ctx.arc(X(0), Y(0), 3, 0, Math.PI * 2);
       ctx.fill();
+      for (const w of this.match.wards) {
+        ctx.fillStyle = w.lit ? "#c44536" : "#e4d3b0";
+        ctx.fillRect(X(w.x) - 2, Y(w.z) - 2, 4, 4);
+      }
       for (const p of this.match.pickups) {
         if (p.taken || p.kind !== "fragment") continue;
         ctx.fillStyle = "#e4d3b0";
@@ -671,7 +691,13 @@ export class DreamSession {
         el.style.display = "none";
         return;
       }
-      const p = this.renderer.project(a.x, a.downed ? 1.1 : a.role === "somnarch" ? 2.9 : 2.15, a.z, rect.width, rect.height);
+      const p = this.renderer.project(
+        a.x,
+        groundY(a.x, a.z) + (a.downed ? 1.1 : a.role === "somnarch" ? 2.9 : 2.15),
+        a.z,
+        rect.width,
+        rect.height,
+      );
       if (!p.visible || p.x < -40 || p.y < -40 || p.x > rect.width + 40 || p.y > rect.height + 40) {
         el.style.display = "none";
         return;
@@ -699,6 +725,7 @@ export class DreamSession {
         this.localInput.usePulse = false;
         this.localInput.ablPulse = false;
         this.localInput.dashPulse = false;
+        this.localInput.kitPulse = false;
       }
     }
     if (this.mode === "host" && this.match) {
@@ -834,6 +861,7 @@ export class DreamSession {
       bannerT: state.bannerT ?? 0,
       actors: state.actors,
       pickups: state.pickups,
+      wards: state.wards ?? [],
     };
     const me = this.me();
     if (prev && me && !me.dead) {
@@ -982,5 +1010,6 @@ function snapOf(m: Match): SnapState {
     bannerT: m.bannerT,
     actors: m.actors.map((a) => ({ ...a, items: a.items.slice() })),
     pickups: m.pickups.map((p) => ({ ...p })),
+    wards: m.wards.map((w) => ({ ...w })),
   };
 }

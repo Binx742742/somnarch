@@ -1,12 +1,8 @@
 import * as THREE from "three";
-import { BLOCKS } from "./level";
-import { ROAD, STRIPS, driveFronts } from "./roads";
+import { BLOCKS, BOUNDARY } from "./level";
+import { DIRT, ROAD, STRIPS, driveFronts } from "./roads";
 
-const DIRT = [
-  { axis: 1, fixed: -10, half: ROAD.dirtHalf, min: 6.4, max: 21.1 },
-  { axis: 0, fixed: 21.05, half: ROAD.dirtHalf, min: -28.2, max: -10 },
-  { axis: 1, fixed: -27.15, half: ROAD.dirtHalf, min: 15.2, max: 21.1 },
-];
+const HOUSES = BLOCKS.length;
 
 function stripsGlsl(
   name: string,
@@ -55,7 +51,7 @@ float dirtMask(vec2 p) {
 }
 float padMask(vec2 p) {
   float m = 0.0;
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < ${HOUSES}; i++) {
     vec2 d = abs(p - uHouses[i].xy) - uHouses[i].zw - vec2(0.35);
     m = max(m, step(max(d.x, d.y), 0.0));
   }
@@ -63,7 +59,7 @@ float padMask(vec2 p) {
 }
 float driveMask(vec2 p) {
   float m = 0.0;
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < ${HOUSES}; i++) {
     vec2 d = p - uDrives[i].xy;
     float along = dot(d, uDrives[i].zw);
     float side = abs(d.x * uDrives[i].w - d.y * uDrives[i].z);
@@ -123,14 +119,14 @@ vec3 suburbAlbedo(vec3 w) {
   col = mix(col, bone, gIsland);
   col = mix(col, vec3(0.038, 0.035, 0.032), gPad);
   float ao = 1.0;
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < ${HOUSES}; i++) {
     vec2 q = abs(p - uHouses[i].xy) - uHouses[i].zw;
     float inside = max(q.x, q.y);
     float dist = length(max(q, 0.0));
     ao *= inside < 0.0 ? 0.0 : smoothstep(0.0, 1.6, dist);
   }
   col *= mix(0.58, 1.0, ao);
-  col = mix(col, vec3(0.012, 0.008, 0.01), smoothstep(30.0, 42.0, gR));
+  col = mix(col, vec3(0.012, 0.008, 0.01), smoothstep(${(BOUNDARY - 12).toFixed(1)}, ${(BOUNDARY + 4).toFixed(1)}, gR));
   return col;
 }
 float suburbRough(vec3 w) {
@@ -152,15 +148,12 @@ float suburbMetal(vec3 w) {
 export function createGround(radius: number): THREE.Mesh {
   const houses = BLOCKS.map((b) => new THREE.Vector4(b.x, b.z, b.w * 0.5, b.d * 0.5));
   const drives = driveFronts().map((d) => new THREE.Vector4(d.x, d.z, d.nx, d.nz));
-  while (houses.length < 8) houses.push(new THREE.Vector4(0, 0, 0, 0));
-  while (drives.length < 8) drives.push(new THREE.Vector4(0, 0, 0, 0));
-
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.9,
     metalness: 0.02,
   });
-  mat.customProgramCacheKey = () => "somnarch-ground-v2";
+  mat.customProgramCacheKey = () => "somnarch-ground-v3";
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uHouses = { value: houses };
     shader.uniforms.uDrives = { value: drives };
@@ -171,7 +164,10 @@ export function createGround(radius: number): THREE.Mesh {
         "#include <begin_vertex>\nvSuburbWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;",
       );
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "varying vec3 vSuburbWorld;\nuniform vec4 uHouses[8];\nuniform vec4 uDrives[8];\n#include <common>")
+      .replace(
+        "#include <common>",
+        `varying vec3 vSuburbWorld;\nuniform vec4 uHouses[${HOUSES}];\nuniform vec4 uDrives[${HOUSES}];\n#include <common>`,
+      )
       .replace("void main() {", `${FRAGMENT_FN}\nvoid main() {`)
       .replace("#include <color_fragment>", "#include <color_fragment>\n\tdiffuseColor.rgb = suburbAlbedo(vSuburbWorld);")
       .replace(

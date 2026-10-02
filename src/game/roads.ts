@@ -17,16 +17,22 @@ type Strip = { axis: 0 | 1; fixed: number; half: number; min: number; max: numbe
 
 /** axis 0: runs along X, `fixed` is Z. axis 1: runs along Z, `fixed` is X. */
 export const STRIPS: Strip[] = [
-  { axis: 0, fixed: -5.5, half: ROAD.spokeHalf, min: -15.7, max: 15.9 },
-  { axis: 1, fixed: 0, half: ROAD.spokeHalf, min: 2.4, max: 17.6 },
+  { axis: 0, fixed: -5.5, half: ROAD.spokeHalf, min: -52, max: 54 },
+  { axis: 1, fixed: 0, half: ROAD.spokeHalf, min: 2.4, max: 38 },
   { axis: 1, fixed: -4.15, half: 2.2, min: -16.2, max: -2.6 },
   { axis: 0, fixed: -12.35, half: 1.85, min: -8.4, max: 9.4 },
+  { axis: 0, fixed: -30, half: 2.15, min: -44, max: 40 },
+  { axis: 1, fixed: -34, half: 2.15, min: -40, max: 24 },
+  { axis: 1, fixed: 40, half: 2.15, min: -38, max: 26 },
+  { axis: 0, fixed: 36, half: 2.15, min: -28, max: 30 },
+  { axis: 1, fixed: 2, half: 2.05, min: -42, max: -26 },
 ];
 
-const DIRT: Strip[] = [
+export const DIRT: Strip[] = [
   { axis: 1, fixed: -10, half: ROAD.dirtHalf, min: 6.4, max: 21.1 },
   { axis: 0, fixed: 21.05, half: ROAD.dirtHalf, min: -28.2, max: -10 },
   { axis: 1, fixed: -27.15, half: ROAD.dirtHalf, min: 15.2, max: 21.1 },
+  { axis: 1, fixed: 8, half: ROAD.dirtHalf, min: 38, max: 54 },
 ];
 
 export type Surface = "island" | "pad" | "asphalt" | "walk" | "drive" | "dirt" | "lawn";
