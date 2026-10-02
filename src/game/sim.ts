@@ -1,10 +1,13 @@
 import {
+  BLOCKS,
   DREAMER_SPAWNS,
   LOOT_SPOTS,
   MONSTER_SPAWN,
   PATROL,
+  WARD_SPOTS,
   lineBlocked,
   moveCircle,
+  outside,
   spotClear,
 } from "./level";
 
@@ -22,6 +25,8 @@ export type Input = {
   usePulse: boolean;
   ablPulse: boolean;
   dashPulse: boolean;
+  /** R: tether (lucid dreamer) or stitch (Somnarch). Veil is Q before lucidity. */
+  kitPulse: boolean;
 };
 
 export type Actor = {
@@ -48,8 +53,8 @@ export type Actor = {
   dodgeT: number;
   stun: number;
   iframes: number;
-  /** 0 none, 1 wake, 2 revive */
-  channel: 0 | 1 | 2;
+  /** 0 none, 1 wake, 2 revive, 3 kindle hearth, 4 snuff hearth */
+  channel: 0 | 1 | 2 | 3 | 4;
   channelT: number;
   channelTarget: string;
   items: ItemKind[];
@@ -63,6 +68,14 @@ export type Actor = {
   sideSign: number;
   botTap: number;
   hearT: number;
+  /** Dreamer stealth pool. Panic breathing when it bottoms out. */
+  nerve: number;
+  veilT: number;
+  markT: number;
+  kitCd: number;
+  huntX: number;
+  huntZ: number;
+  huntT: number;
 };
 
 export type Pickup = {
@@ -73,11 +86,20 @@ export type Pickup = {
   taken: boolean;
 };
 
+export type Ward = {
+  id: string;
+  name: string;
+  x: number;
+  z: number;
+  lit: boolean;
+};
+
 export type Match = {
   seed: number;
   time: number;
   actors: Actor[];
   pickups: Pickup[];
+  wards: Ward[];
   phase: "play" | "win" | "lose";
   log: string[];
   banner: string;
@@ -92,6 +114,10 @@ export type SimEvent =
   | { type: "down"; who: string }
   | { type: "death"; who: string }
   | { type: "stun" }
+  | { type: "veil" }
+  | { type: "ward" }
+  | { type: "snuff" }
+  | { type: "stitch" }
   | { type: "win" }
   | { type: "lose" };
 
@@ -101,7 +127,10 @@ const BOT_DREAMERS = ["Vesper", "Ione", "Calder", "Bramble"];
 const WAKE_NEED = 4;
 const WAKE_TIME = 2.2;
 const REVIVE_TIME = 1.9;
+const WARD_TIME = 3.35;
+const SNUFF_TIME = 2.45;
 const ALTAR_R = 3.35;
+const WARD_R = 2.15;
 const TETHER_R = 4.7;
 const TETHER_CD = 7.2;
 const DREAMER_HP = 100;
@@ -164,6 +193,13 @@ function blankActor(partial: Pick<Actor, "id" | "name" | "role" | "bot" | "x" | 
     sideSign: 1,
     botTap: 0,
     hearT: 0,
+    nerve: 100,
+    veilT: 0,
+    markT: 0,
+    kitCd: monster ? 2.5 : 1,
+    huntX: 0,
+    huntZ: 0,
+    huntT: 0,
   };
 }
 
@@ -219,6 +255,12 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
     "adrenaline",
     "clock",
     "clock",
+    "fragment",
+    "fragment",
+    "bandage",
+    "bandage",
+    "adrenaline",
+    "clock",
   ];
   const pickups: Pickup[] = [];
   for (let i = 0; i < plan.length && i < spots.length; i++) {
@@ -237,9 +279,10 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
     time: 0,
     actors,
     pickups,
+    wards: WARD_SPOTS.map((w) => ({ ...w, lit: false })),
     phase: "play",
-    log: ["The cul-de-sac dreams. Find four latch-keys."],
-    banner: "Find four latch-keys. Wake at the clock.",
+    log: ["The neighborhood dreams. Latch-keys, then the three hearths."],
+    banner: "Four latch-keys. Wake at the clock. Kindle the hearths.",
     bannerT: 4,
   };
 }
@@ -285,6 +328,15 @@ function decay(a: Actor, dt: number): void {
   a.swing = Math.max(0, a.swing - dt * 3.1);
   a.botTap = Math.max(0, a.botTap - dt);
   a.hearT = Math.max(0, a.hearT - dt);
+  a.veilT = Math.max(0, a.veilT - dt);
+  a.markT = Math.max(0, a.markT - dt);
+  a.kitCd = Math.max(0, a.kitCd - dt);
+  a.huntT = Math.max(0, a.huntT - dt);
+  if (a.role === "dreamer" && !a.dead && !a.downed) {
+    const sprinting = a.spd > 6.2 && a.dodgeT <= 0;
+    a.nerve = Math.max(0, Math.min(100, a.nerve + (sprinting ? -10 : 11) * dt));
+    if (a.nerve < 12 && a.veilT <= 0) a.hearT = Math.max(a.hearT, 0.2);
+  }
   if (a.sideT > 0) a.sideT = Math.max(0, a.sideT - dt);
 }
 
@@ -329,6 +381,7 @@ function locomotion(
     wx = -Math.sin(a.yaw);
     wz = -Math.cos(a.yaw);
     moving = true;
+    a.veilT = 0;
   } else if (moving) {
     const len = Math.hypot(wx, wz) || 1;
     wx /= len;
@@ -349,9 +402,10 @@ function locomotion(
 
   const target = moving ? top : 0;
   a.spd += (target - a.spd) * (1 - Math.exp(-12 * dt));
+  if (sprint && moving && a.dodgeT <= 0) a.veilT = 0;
   if (!monster && sprint && moving && a.dodgeT <= 0 && a.spd > 1) {
     a.stamina = Math.max(0, a.stamina - 24 * dt);
-    a.hearT = 0.35;
+    if (a.veilT <= 0) a.hearT = 0.35;
   } else if (!monster) {
     a.stamina = Math.min(100, a.stamina + 15 * dt);
   } else {
@@ -372,9 +426,9 @@ function locomotion(
   if (moving && a.dodgeT <= 0 && moved > 0.4) {
     a.yaw = approachYaw(a.yaw, yawForDirection(wx, wz), 11, dt);
     a.stuckT = moved < 0.8 ? a.stuckT + dt : 0;
-    if (a.stuckT > 0.7) {
-      a.sideT = 0.85;
-      a.sideSign = a.sideSign > 0 ? -1 : 1;
+    if (a.stuckT > 0.45 && a.sideT <= 0) {
+      a.sideSign = slideSign(a);
+      a.sideT = 1.15;
       a.stuckT = 0;
     }
   } else if (!moving) {
@@ -384,6 +438,26 @@ function locomotion(
 
 function ozMix(ox: number, wz: number, s: number): number {
   return ox * s * 0.85 + wz * 0.55;
+}
+
+/** Keep sliding along the same side of the nearest house instead of reversing every bump. */
+function slideSign(a: Actor): number {
+  let bestX = 0;
+  let bestZ = 0;
+  let bestD = 10;
+  for (const b of BLOCKS) {
+    const d = Math.hypot(a.x - b.x, a.z - b.z);
+    if (d < bestD) {
+      bestD = d;
+      bestX = b.x;
+      bestZ = b.z;
+    }
+  }
+  if (bestD >= 10) return a.sideSign || 1;
+  const fx = Math.abs(a.vx) + Math.abs(a.vz) > 0.2 ? a.vx : -Math.sin(a.yaw);
+  const fz = Math.abs(a.vx) + Math.abs(a.vz) > 0.2 ? a.vz : -Math.cos(a.yaw);
+  const cross = fx * (a.z - bestZ) - fz * (a.x - bestX);
+  return cross >= 0 ? 1 : -1;
 }
 
 function separate(m: Match): void {
@@ -416,7 +490,7 @@ function separate(m: Match): void {
 }
 
 function moveBlocked(x: number, z: number, a: Actor): boolean {
-  return Math.hypot(x, z) > 36 || false || blockedSoft(x, z, a);
+  return outside(x, z, radiusOf(a)) || blockedSoft(x, z, a);
 }
 
 function blockedSoft(x: number, z: number, a: Actor): boolean {
@@ -449,7 +523,7 @@ function hurtDreamer(m: Match, a: Actor, amount: number, events: SimEvent[]): vo
   if (a.hp <= 0) {
     a.hp = 0;
     a.downed = true;
-    a.downT = 14;
+    a.downT = 18;
     a.spd = 0;
     say(m, `${a.name} is bleeding out in the dream.`);
     events.push({ type: "down", who: a.id });
@@ -472,25 +546,30 @@ function killDreamer(m: Match, a: Actor, events: SimEvent[]): void {
   }
 }
 
+function hearthsOpen(m: Match): boolean {
+  return m.wards.length > 0 && m.wards.every((w) => w.lit);
+}
+
 function damageMonster(m: Match, amount: number, events: SimEvent[]): void {
   const mon = monsterOf(m);
   if (!mon || mon.dead || m.phase !== "play") return;
   if (mon.iframes > 0) return;
   const lucidStrike = allLivingLucid(m);
-  const dealt = lucidStrike ? amount * 1.55 : amount;
+  const ready = lucidStrike && hearthsOpen(m);
+  const dealt = lucidStrike ? amount * (ready ? 1.7 : 1.2) : amount * 0.35;
   mon.hp -= dealt;
   mon.iframes = 0.12;
   events.push({ type: "hit", victim: mon.id, amount: dealt });
   if (mon.hp <= 0) {
-    if (lucidStrike) {
+    if (ready) {
       mon.hp = 0;
       mon.dead = true;
       m.phase = "win";
-      say(m, "The Somnarch unravels. The cul-de-sac wakes.");
+      say(m, "The Somnarch unravels. The neighborhood wakes.");
       events.push({ type: "win" });
     } else {
-      mon.hp = 16;
-      say(m, "It will not die while a dreamer still sleeps.");
+      mon.hp = 64;
+      say(m, lucidStrike ? "The hearths are still dark. It will not stay dead." : "It will not die while a dreamer still sleeps.");
     }
   }
 }
@@ -600,10 +679,46 @@ function tether(m: Match, a: Actor, events: SimEvent[]): void {
   }
 }
 
+function nearestWard(m: Match, a: Actor, lit: boolean): Ward | null {
+  let best: Ward | null = null;
+  let bestD = WARD_R;
+  for (const w of m.wards) {
+    if (w.lit !== lit) continue;
+    const d = Math.hypot(a.x - w.x, a.z - w.z);
+    if (d < bestD) {
+      bestD = d;
+      best = w;
+    }
+  }
+  return best;
+}
+
 function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: SimEvent[]): void {
-  if (!held || a.dead || a.role !== "dreamer" || a.stun > 0) {
+  if (!held || a.dead || a.stun > 0 || a.downed) {
     a.channel = 0;
     a.channelT = 0;
+    return;
+  }
+  if (a.role === "somnarch") {
+    const ward = nearestWard(m, a, true);
+    if (!ward) {
+      a.channel = 0;
+      a.channelT = 0;
+      return;
+    }
+    if (a.channel !== 4 || a.channelTarget !== ward.id) {
+      a.channel = 4;
+      a.channelTarget = ward.id;
+      a.channelT = 0;
+    }
+    a.channelT += dt;
+    if (a.channelT >= SNUFF_TIME) {
+      ward.lit = false;
+      a.channel = 0;
+      a.channelT = 0;
+      say(m, `The Somnarch smothered the ${ward.name}.`);
+      events.push({ type: "snuff" });
+    }
     return;
   }
   const downed = nearestDowned(m, a);
@@ -625,6 +740,37 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
     }
     return;
   }
+  if (a.lucid) {
+    const ward = nearestWard(m, a, false);
+    if (ward) {
+      if (a.channel !== 3 || a.channelTarget !== ward.id) {
+        a.channel = 3;
+        a.channelTarget = ward.id;
+        a.channelT = 0;
+      }
+      a.channelT += dt;
+      a.hearT = Math.max(a.hearT, 0.4);
+      if (a.channelT >= WARD_TIME) {
+        ward.lit = true;
+        a.channel = 0;
+        a.channelT = 0;
+        const mon = monsterOf(m);
+        if (mon && !mon.dead) {
+          mon.huntX = ward.x;
+          mon.huntZ = ward.z;
+          mon.huntT = 9;
+          mon.buffT = Math.max(mon.buffT, 5);
+          mon.hearT = 2;
+        }
+        say(m, `${a.name} kindled the ${ward.name}.`);
+        events.push({ type: "ward" });
+        if (hearthsOpen(m) && allLivingLucid(m)) {
+          say(m, "Every hearth burns. The Somnarch can be unmade.");
+        }
+      }
+      return;
+    }
+  }
   const altarR = a.channel === 1 ? ALTAR_R + 1.1 : ALTAR_R;
   if (!a.lucid && !a.downed && a.fragments >= WAKE_NEED && Math.hypot(a.x, a.z) <= altarR) {
     if (a.channel !== 1) {
@@ -643,15 +789,16 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
 function strike(m: Match, a: Actor, aimYaw: number, events: SimEvent[]): void {
   if (a.attackCd > 0 || a.dead || a.stun > 0 || a.downed) return;
   a.swing = 1;
+  a.veilT = 0;
   a.yaw = approachYaw(a.yaw, aimYaw, 20, 1 / 60);
   events.push({ type: "swing", who: a.id });
   if (a.role === "somnarch") {
-    a.attackCd = 0.82;
+    a.attackCd = 0.96;
     for (const o of m.actors) {
       if (o.role !== "dreamer" || o.dead) continue;
       const reach = o.downed ? 2.35 : 2.25;
       if (o.downed ? dist(a, o) <= reach : inArc(a.x, a.z, a.yaw, o.x, o.z, reach, 1.15)) {
-        hurtDreamer(m, o, o.downed ? 999 : 36, events);
+        hurtDreamer(m, o, o.downed ? 999 : 28, events);
       }
     }
   } else if (a.lucid) {
@@ -682,17 +829,77 @@ function tryDash(a: Actor): void {
   }
 }
 
-function tryAbility(m: Match, a: Actor): void {
+function tryAbility(m: Match, a: Actor, events: SimEvent[]): void {
   if (a.abilityCd > 0 || a.dead || a.downed || a.stun > 0) return;
   if (a.role === "somnarch") {
-    a.senseT = 5;
-    a.abilityCd = 13;
-    say(m, "The Somnarch searches the dream.");
-  } else if (a.lucid) {
-    a.senseT = 5.5;
+    a.senseT = 4.5;
     a.abilityCd = 16;
-    say(m, `${a.name} sends a lucid pulse.`);
+    let nearest: Actor | null = null;
+    let best = 48;
+    for (const o of m.actors) {
+      if (o.role !== "dreamer" || o.dead) continue;
+      const d = dist(a, o);
+      if (d < best) {
+        best = d;
+        nearest = o;
+      }
+    }
+    if (nearest && best < 28) nearest.markT = 4;
+    say(m, nearest ? `The Somnarch marks ${nearest.name}.` : "The Somnarch searches the dream.");
+    return;
   }
+  if (a.lucid) {
+    a.senseT = 5.5;
+    a.abilityCd = 15;
+    a.hearT = 1.35;
+    const mon = monsterOf(m);
+    if (mon && !mon.dead && dist(a, mon) < 6.8) {
+      mon.stun = Math.max(mon.stun, 0.9);
+      damageMonster(m, 11, events);
+      events.push({ type: "stun" });
+      say(m, `${a.name} pulses the dream in its face.`);
+    } else {
+      say(m, `${a.name} sends a lucid pulse.`);
+    }
+    return;
+  }
+  if (a.nerve < 34) return;
+  a.nerve -= 34;
+  a.veilT = 3.5;
+  a.hearT = 0;
+  a.abilityCd = 13;
+  events.push({ type: "veil" });
+}
+
+function tryKit(m: Match, a: Actor, events: SimEvent[]): void {
+  if (a.kitCd > 0 || a.dead || a.downed || a.stun > 0) return;
+  if (a.role === "somnarch") {
+    a.kitCd = 12;
+    a.swing = 1;
+    let caught = false;
+    for (const o of m.actors) {
+      if (o.role !== "dreamer" || o.dead || o.downed) continue;
+      if (!inArc(a.x, a.z, a.yaw, o.x, o.z, 7.4, 1.05)) continue;
+      if (o.dodgeT > 0 || o.iframes > 0.2) continue;
+      o.stun = Math.max(o.stun, 0.72);
+      o.veilT = 0;
+      o.channel = 0;
+      const pull = moveCircle(o.x, o.z, (a.x - o.x) * 0.18, (a.z - o.z) * 0.18, radiusOf(o));
+      o.x = pull.x;
+      o.z = pull.z;
+      caught = true;
+    }
+    if (caught) {
+      events.push({ type: "stitch" });
+      say(m, "The Somnarch throws a stitch.");
+    }
+    return;
+  }
+  if (!a.lucid) return;
+  if (a.tetherCd > 0) return;
+  const before = a.tetherCd;
+  tether(m, a, events);
+  if (a.tetherCd !== before) a.kitCd = 0.35;
 }
 
 function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, events: SimEvent[]): void {
@@ -706,6 +913,7 @@ function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, event
     usePulse: false,
     ablPulse: false,
     dashPulse: false,
+    kitPulse: false,
   };
   if (a.downed) {
     a.downT -= dt;
@@ -723,13 +931,18 @@ function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, event
   locomotion(a, world.x, world.z, dt, input.sprint && a.stamina > 1);
   if (input.dashPulse) tryDash(a);
   if (input.usePulse) useItem(m, a, events);
-  if (input.ablPulse) tryAbility(m, a);
-  if (input.atk) strike(m, a, input.camYaw, events);
+  if (input.ablPulse) tryAbility(m, a, events);
+  if (input.kitPulse) tryKit(m, a, events);
+  if (input.atk) {
+    a.veilT = 0;
+    strike(m, a, input.camYaw, events);
+  }
   tickInteract(m, a, input.interactHeld && Math.hypot(a.vx, a.vz) < 3.2, dt, events);
   tryPickup(m, a, events);
   input.usePulse = false;
   input.ablPulse = false;
   input.dashPulse = false;
+  input.kitPulse = false;
 }
 
 function tickBot(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
@@ -747,7 +960,7 @@ function tickBot(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
 }
 
 function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
-  if (m.time < 6) {
+  if (m.time < 18) {
     const p = PATROL[a.patrolI % PATROL.length]!;
     const gx = p[0] - a.x;
     const gz = p[1] - a.z;
@@ -760,11 +973,13 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
   for (const o of m.actors) {
     if (o.role !== "dreamer" || o.dead) continue;
     const d = dist(a, o);
-    const los = d < 24 && !lineBlocked(a.x, a.z, o.x, o.z);
-    const noisy = Math.hypot(o.vx, o.vz) > 6.2 || o.hearT > 0;
+    const los = d < 16 && !lineBlocked(a.x, a.z, o.x, o.z);
+    const veiled = o.veilT > 0 && d > 3.4 && a.senseT <= 0 && o.markT <= 0;
+    const noisy = !veiled && (Math.hypot(o.vx, o.vz) > 6.2 || o.hearT > 0);
     let score = 0;
-    if (a.senseT > 0) score = 80 - d;
-    else if (los && d < 22) score = 100 - d;
+    if (a.senseT > 0 || o.markT > 0) score = 80 - d;
+    else if (veiled) score = d < 3.4 ? 70 - d : 0;
+    else if (los && d < 16) score = 100 - d;
     else if (noisy && d < 18) score = 64 - d;
     else if (d < 7.5) score = 40 - d;
     if (o.downed) score += 24;
@@ -776,14 +991,29 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
   }
   let wx = 0;
   let wz = 0;
-  if (best) {
+  let snuffing = false;
+  const chase = best && (dist(a, best) < 18 || a.huntT <= 0);
+  if (best && chase) {
     wx = best.x - a.x;
     wz = best.z - a.z;
     const d = dist(a, best);
     if (d < (best.downed ? 2.3 : 2.15)) strike(m, a, yawForDirection(wx, wz), events);
+    if (d > 3.1 && d < 7.2 && a.kitCd <= 0 && a.botTap <= 0 && !best.downed) {
+      a.yaw = yawForDirection(wx, wz);
+      tryKit(m, a, events);
+      a.botTap = 1.1;
+    }
     if (d > 4.5 && d < 14 && a.dashCd <= 0 && a.botTap <= 0) {
       tryDash(a);
       a.botTap = 1.2;
+    }
+  } else if (a.huntT > 0) {
+    wx = a.huntX - a.x;
+    wz = a.huntZ - a.z;
+    const hearth = nearestWard(m, a, true);
+    if (hearth && dist(a, { x: hearth.x, z: hearth.z }) < WARD_R && (!best || dist(a, best) > 8)) {
+      tickInteract(m, a, true, dt, events);
+      snuffing = true;
     }
   } else {
     const p = PATROL[a.patrolI % PATROL.length]!;
@@ -791,9 +1021,13 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
     wz = p[1] - a.z;
     if (Math.hypot(wx, wz) < 1.6) a.patrolI += 1;
     if (a.abilityCd <= 0 && m.time > 6 && a.botTap <= 0) {
-      tryAbility(m, a);
+      tryAbility(m, a, events);
       a.botTap = 2;
     }
+  }
+  if (!snuffing && a.channel === 4) {
+    a.channel = 0;
+    a.channelT = 0;
   }
   locomotion(a, wx, wz, dt, true);
 }
@@ -801,8 +1035,9 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
 function botDreamer(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
   const mon = monsterOf(m);
   const md = mon && !mon.dead ? dist(a, mon) : 999;
-  const los = mon ? md < 20 && !lineBlocked(a.x, a.z, mon.x, mon.z) : false;
-  const danger = mon && !mon.dead && mon.stun <= 0 && (los || md < 8 || (a.senseT > 0 && md < 28));
+  const los = mon ? md < 16 && !lineBlocked(a.x, a.z, mon.x, mon.z) : false;
+  const hunted = !!mon && (mon.senseT > 0 || a.markT > 0 || a.hearT > 0);
+  const danger = mon && !mon.dead && mon.stun <= 0 && (md < 8.5 || (los && md < 12 && hunted));
   let wx = 0;
   let wz = 0;
   let interact = false;
@@ -812,6 +1047,7 @@ function botDreamer(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
     wx = a.x - mon.x;
     wz = a.z - mon.z;
     sprint = true;
+    if (!a.lucid && a.abilityCd <= 0 && a.veilT <= 0 && a.nerve >= 34 && md < 9) tryAbility(m, a, events);
     if (md < 2.8 && a.dashCd <= 0) tryDash(a);
     if (md < 3.3 && a.lucid) strike(m, a, yawForDirection(mon.x - a.x, mon.z - a.z), events);
     else if (md < 2.3 && !a.lucid) strike(m, a, yawForDirection(mon.x - a.x, mon.z - a.z), events);
@@ -825,15 +1061,18 @@ function botDreamer(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
     }
   } else if (a.lucid) {
     const sleeper = nearestSleeper(m, a);
-    const live = livingDreamers(m);
-    const ready = live.every((d) => d.lucid || d.id === a.id);
-    if (sleeper && !ready) {
+    const hearth = nearestWard(m, a, false) ?? m.wards.find((w) => !w.lit) ?? null;
+    if (sleeper && dist(a, sleeper) < 22) {
       wx = sleeper.x - a.x;
       wz = sleeper.z - a.z;
       if (dist(a, sleeper) <= TETHER_R && a.tetherCd <= 0 && a.botTap <= 0) {
         tether(m, a, events);
         a.botTap = 0.4;
       }
+    } else if (hearth) {
+      wx = hearth.x - a.x;
+      wz = hearth.z - a.z;
+      if (Math.hypot(wx, wz) <= WARD_R) interact = true;
     } else if (mon && !mon.dead) {
       wx = mon.x - a.x;
       wz = mon.z - a.z;
@@ -884,7 +1123,7 @@ function botDreamer(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
   locomotion(a, wx, wz, dt, sprint);
   tickInteract(m, a, interact, dt, events);
   if (a.lucid && a.abilityCd <= 0 && danger && mon && (lineBlocked(a.x, a.z, mon.x, mon.z) || md > 14)) {
-    tryAbility(m, a);
+    tryAbility(m, a, events);
   }
 }
 
@@ -938,20 +1177,23 @@ export function objectiveFor(m: Match, id: string): string {
   if (!me) return "";
   if (m.phase === "win") return "The cul-de-sac is awake.";
   if (m.phase === "lose") return "The dream kept everyone.";
+  const lit = m.wards.filter((w) => w.lit).length;
+  const hearthLine = `Hearths ${lit}/${m.wards.length}.`;
   if (me.role === "somnarch") {
     const left = livingDreamers(m).length;
     return left > 0
-      ? `Stitch them under. ${left} dreamer${left === 1 ? "" : "s"} still breathe${left === 1 ? "s" : ""}.`
-      : "The cul-de-sac is yours.";
+      ? `Stitch them under. ${left} still breathe. Snuff hearths. ${hearthLine}`
+      : "The neighborhood is yours.";
   }
   if (me.dead) return "You were stitched under. The others still dream.";
   if (me.downed) return "You are bleeding out. Call for a tether.";
   if (!me.lucid) {
-    if (me.fragments >= WAKE_NEED) return "Hold wake at the clock altar.";
-    return `Latch-keys ${me.fragments}/${WAKE_NEED}. Wake, then pull the others out.`;
+    if (me.fragments >= WAKE_NEED) return `Hold wake at the clock altar. ${hearthLine}`;
+    return `Latch-keys ${me.fragments}/${WAKE_NEED}. Q veils. Wake, then kindle the hearths.`;
   }
-  if (!allLivingLucid(m)) return "You are Lucid. Tether the sleepers, then unmake it.";
-  return "Everyone living is awake. Cut the Somnarch apart.";
+  if (!hearthsOpen(m)) return `Lucid. Kindle a dark hearth. ${hearthLine} R tethers.`;
+  if (!allLivingLucid(m)) return "Hearths burn. Tether the sleepers, then cut it apart.";
+  return "Everyone living is awake and the hearths burn. Unmake the Somnarch.";
 }
 
 export function promptFor(m: Match, id: string): string {
@@ -963,17 +1205,23 @@ export function promptFor(m: Match, id: string): string {
   if (me.role === "somnarch") {
     const down = m.actors.find((a) => a.downed && dist(me, a) < 2.4);
     if (down) return "Strike to finish";
+    const litWard = nearestWard(m, me, true);
+    if (litWard) return `Hold to snuff ${litWard.name}`;
+    if (me.kitCd <= 0 && m.actors.some((a) => a.role === "dreamer" && !a.dead && dist(me, a) < 12)) return "R stitch";
     return "";
   }
   const down = nearestDowned(m, me);
   if (down) return `Hold to revive ${down.name}`;
+  if (me.lucid) {
+    const dark = nearestWard(m, me, false);
+    if (dark) return `Hold to kindle ${dark.name}`;
+    const sleeper = nearestSleeper(m, me);
+    if (sleeper && me.tetherCd <= 0) return `R tether ${sleeper.name}`;
+  }
   if (!me.lucid && me.fragments >= WAKE_NEED && Math.hypot(me.x, me.z) <= ALTAR_R + 0.4) {
     return "Hold to wake";
   }
-  if (me.lucid) {
-    const sleeper = nearestSleeper(m, me);
-    if (sleeper && me.tetherCd <= 0) return `Press tether for ${sleeper.name}`;
-  }
+  if (!me.lucid && me.abilityCd <= 0 && me.nerve >= 34) return "Q veil";
   return "";
 }
 
@@ -981,6 +1229,8 @@ export const RULES = {
   WAKE_NEED,
   WAKE_TIME,
   REVIVE_TIME,
+  WARD_TIME,
+  SNUFF_TIME,
   DREAMER_HP,
   MONSTER_HP,
   ALTAR_R,
@@ -998,8 +1248,9 @@ export function monsterVisibleTo(viewer: Actor, mon: Actor): boolean {
 
 export function dreamerVisibleToMonster(mon: Actor, dreamer: Actor): boolean {
   if (dreamer.dead) return false;
-  if (mon.senseT > 0) return true;
+  if (dreamer.markT > 0 || mon.senseT > 0) return true;
   const d = dist(mon, dreamer);
+  if (dreamer.veilT > 0 && d > 3.4) return false;
   if (d < 9) return true;
   if ((Math.hypot(dreamer.vx, dreamer.vz) > 6.2 || dreamer.hearT > 0) && d < 20) return true;
   if (d < 26 && !lineBlocked(mon.x, mon.z, dreamer.x, dreamer.z)) return true;

@@ -91,6 +91,23 @@ export class DreamAudio {
   foot(): void {
     this.noise(240, 0.04, 0.03);
   }
+  veil(): void {
+    this.tone(520, 0.18, "sine", 0.03);
+    this.tone(780, 0.28, "triangle", 0.02);
+  }
+  ward(): void {
+    this.tone(392, 0.22, "sine", 0.05);
+    this.tone(523, 0.34, "triangle", 0.04);
+    this.tone(659, 0.42, "sine", 0.03);
+  }
+  snuff(): void {
+    this.tone(146, 0.28, "sawtooth", 0.04);
+    this.noise(80, 0.2, 0.08);
+  }
+  stitch(): void {
+    this.noise(140, 0.1, 0.12);
+    this.tone(196, 0.16, "square", 0.04);
+  }
 
   private bed(): void {
     const ctx = this.ctx;

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { BLOCKS, BOUNDARY, LAMPS, hitsBlock, type Block } from "./level";
+import { BLOCKS, BOUNDARY, HILL, LAMPS, WARD_SPOTS, groundY, hitsBlock, type Block } from "./level";
 import { createGround } from "./ground";
 import { orient, surfaceAt, type Front } from "./roads";
 import { createSuburbTextures, type SuburbTextures } from "./textures";
@@ -13,6 +13,7 @@ export type SuburbHandle = {
   lampLights: THREE.PointLight[];
   textures: THREE.Texture[];
   environment: THREE.Texture | null;
+  wards: Array<{ id: string; light: THREE.PointLight | null; mat: THREE.MeshStandardMaterial }>;
 };
 
 type Style = {
@@ -33,6 +34,19 @@ const STYLES: Record<string, Style> = {
   school: { wall: "brick", tint: 0x9a6458, roof: "eave", porch: true, special: "house", rise: 1.55 },
   station: { wall: "siding", tint: 0xd2c2a4, roof: "eave", porch: true, special: "house", rise: 1.35 },
   cottage: { wall: "siding", tint: 0xedd9c0, roof: "front", porch: true, special: "house", rise: 2.15 },
+  bungalow: { wall: "siding", tint: 0xd8c8b0, roof: "eave", porch: true, special: "house", rise: 1.6 },
+  garage: { wall: "brick", tint: 0x6a5a52, roof: "eave", porch: false, special: "house", rise: 0.85 },
+  library: { wall: "stone", tint: 0xc8c4bc, roof: "front", porch: true, special: "house", rise: 2.2 },
+  greenhouse: { wall: "metal", tint: 0x9aa89a, roof: "eave", porch: false, special: "house", rise: 0.7 },
+  funeral: { wall: "stone", tint: 0xb7b0b4, roof: "front", porch: false, special: "house", rise: 1.85 },
+  lodge: { wall: "siding", tint: 0x8a6848, roof: "eave", porch: true, special: "house", rise: 1.9 },
+  mill: { wall: "brick", tint: 0x7a5348, roof: "eave", porch: false, special: "house", rise: 1.45 },
+  mausoleum: { wall: "stone", tint: 0xd5d0cc, roof: "front", porch: false, special: "house", rise: 1.15 },
+  shed: { wall: "siding", tint: 0xc4b49a, roof: "eave", porch: false, special: "house", rise: 1.05 },
+  barn: { wall: "siding", tint: 0x8d5a42, roof: "eave", porch: false, special: "house", rise: 1.7 },
+  cabin: { wall: "siding", tint: 0xe0c8a8, roof: "front", porch: true, special: "house", rise: 1.85 },
+  rectory: { wall: "brick", tint: 0x6e403c, roof: "front", porch: true, special: "house", rise: 2.05 },
+  shelter: { wall: "siding", tint: 0xb7a48a, roof: "eave", porch: false, special: "house", rise: 0.8 },
 };
 
 const WHITE = new THREE.Color(0xffffff);
@@ -88,6 +102,7 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
   buildProps(mats, bucket, windows);
   buildFloaters(scene);
   buildSmoke(scene);
+  buildHill(scene);
 
   bucket.flush(scene, true, true);
 
@@ -116,7 +131,7 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
         float lit = mix(pulse + blink * 0.7, 0.05, dark);
         vec3 col = vColor * lit;
         float dist = length(vWorld - cameraPosition);
-        float fogF = 1.0 - exp(-dist * 0.018);
+        float fogF = 1.0 - exp(-dist * 0.012);
         col = mix(col, vec3(0.01, 0.006, 0.008), fogF);
         gl_FragColor = vec4(col, 1.0);
       }
@@ -159,7 +174,8 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
     pmrem.dispose();
   }
 
-  return { windowMat, clockHands, altarLight, lampLights, textures: textures.all, environment };
+  const wards = buildWards(scene, high);
+  return { windowMat, clockHands, altarLight, lampLights, textures: textures.all, environment, wards };
 }
 
 function createMaterials(tex: SuburbTextures): Record<string, THREE.MeshStandardMaterial> {
@@ -201,6 +217,127 @@ function createMaterials(tex: SuburbTextures): Record<string, THREE.MeshStandard
   };
 }
 
+function buildShell(
+  bucket: Bucket,
+  mat: THREE.Material,
+  face: Front,
+  block: Block,
+  h: number,
+  tint: THREE.Color,
+): void {
+  const t = 0.48;
+  const door = 1.7;
+  const fw = face.width;
+  const fd = face.depth;
+  const side = Math.max(0.45, (fw - door) * 0.5);
+  const y = h * 0.5 + 0.12;
+  put(bucket, mat, face, block, side, h, t, -(door * 0.5 + side * 0.5), y, fd * 0.5 - t * 0.5, tint);
+  put(bucket, mat, face, block, side, h, t, door * 0.5 + side * 0.5, y, fd * 0.5 - t * 0.5, tint);
+  put(bucket, mat, face, block, door, Math.max(0.42, h * 0.2), t, 0, h * 0.88, fd * 0.5 - t * 0.5, tint);
+  put(bucket, mat, face, block, fw, h, t, 0, y, -(fd * 0.5 - t * 0.5), tint);
+  put(bucket, mat, face, block, t, h, fd, fw * 0.5 - t * 0.5, y, 0, tint);
+  put(bucket, mat, face, block, t, h, fd, -(fw * 0.5 - t * 0.5), y, 0, tint);
+}
+
+function buildTower(
+  bucket: Bucket,
+  mats: Record<string, THREE.MeshStandardMaterial>,
+  windows: THREE.BufferGeometry[],
+  block: Block,
+): void {
+  const y0 = groundY(block.x, block.z);
+  for (const [sx, sz] of [
+    [-1, -1],
+    [-1, 1],
+    [1, -1],
+    [1, 1],
+  ] as const) {
+    const leg = new THREE.CylinderGeometry(0.12, 0.16, 3.4, 5);
+    leg.translate(block.x + sx * 1.05, y0 + 1.7, block.z + sz * 1.05);
+    bucket.add(mats.metal!, stamp(leg, DARK));
+  }
+  const tank = new THREE.CylinderGeometry(1.35, 1.35, 2.2, 10);
+  tank.translate(block.x, y0 + 4.6, block.z);
+  bucket.add(mats.metal!, stamp(tank, new THREE.Color(0x6a6248)));
+  const cap = new THREE.ConeGeometry(1.5, 0.85, 10);
+  cap.translate(block.x, y0 + 6.05, block.z);
+  bucket.add(mats.metal!, stamp(cap, new THREE.Color(0x4a4038)));
+  const bulb = new THREE.SphereGeometry(0.18, 8, 6);
+  bulb.translate(block.x, y0 + 6.6, block.z);
+  windows.push(paintGlow(bulb, 4.2, 0.35, 0.22));
+}
+
+function buildHill(scene: THREE.Scene): void {
+  const segs = 20;
+  const rings = 8;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  positions.push(0, HILL.h, 0);
+  for (let r = 1; r <= rings; r++) {
+    const radius = (r / rings) * HILL.r;
+    const y = (1 - r / rings) ** 2 * HILL.h;
+    for (let s = 0; s < segs; s++) {
+      const a = (s / segs) * Math.PI * 2;
+      positions.push(Math.cos(a) * radius, Math.max(0.04, y), Math.sin(a) * radius);
+    }
+  }
+  const center = 0;
+  for (let s = 0; s < segs; s++) {
+    const a = 1 + s;
+    const b = 1 + ((s + 1) % segs);
+    indices.push(center, b, a);
+  }
+  for (let r = 0; r < rings - 1; r++) {
+    const row = 1 + r * segs;
+    const next = row + segs;
+    for (let s = 0; s < segs; s++) {
+      const s2 = (s + 1) % segs;
+      indices.push(row + s, row + s2, next + s);
+      indices.push(row + s2, next + s2, next + s);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x3c342c, roughness: 0.96, metalness: 0.02 });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(HILL.x, 0.03, HILL.z);
+  mesh.receiveShadow = true;
+  mesh.castShadow = false;
+  mesh.name = "overlook";
+  scene.add(mesh);
+}
+
+function buildWards(
+  scene: THREE.Scene,
+  high: boolean,
+): Array<{ id: string; light: THREE.PointLight | null; mat: THREE.MeshStandardMaterial }> {
+  return WARD_SPOTS.map((w) => {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x3a241c,
+      emissive: 0x4a180e,
+      emissiveIntensity: 0.35,
+      roughness: 0.62,
+    });
+    const y = groundY(w.x, w.z);
+    const stone = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.58, 0.72, 6), mat);
+    stone.position.set(w.x, y + 0.36, w.z);
+    stone.castShadow = true;
+    const bowl = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.06, 6, 8), mat);
+    bowl.position.set(w.x, y + 0.78, w.z);
+    bowl.rotation.x = Math.PI / 2;
+    scene.add(stone, bowl);
+    let light: THREE.PointLight | null = null;
+    if (high) {
+      light = new THREE.PointLight(0xffb070, 0.4, 7, 2);
+      light.position.set(w.x, y + 1.4, w.z);
+      scene.add(light);
+    }
+    return { id: w.id, light, mat };
+  });
+}
+
 function buildBlock(
   block: Block,
   style: Style,
@@ -212,8 +349,12 @@ function buildBlock(
   const tint = new THREE.Color(style.tint);
   const wall = mats[style.wall]!;
   const h = block.h;
-  const two = style.special === "house" && h >= 5.2;
-  const porchD = style.porch ? Math.min(1.28, face.depth * 0.22) : 0;
+  if (block.kind === "tower") {
+    buildTower(bucket, mats, windows, block);
+    return;
+  }
+  const two = style.special === "house" && h >= 5.2 && !block.interior;
+  const porchD = style.porch && !block.interior ? Math.min(1.28, face.depth * 0.22) : 0;
 
   put(bucket, mats.concrete!, face, block, face.width + 0.2, 0.2, face.depth + 0.2, 0, 0.1, 0, CONCRETE);
 
@@ -232,7 +373,8 @@ function buildBlock(
   }
 
   if (style.special === "chapel") {
-    put(bucket, wall, face, block, face.width * 0.92, h, face.depth * 0.9, 0, h * 0.5 + 0.12, -0.15, tint);
+    if (block.interior) buildShell(bucket, wall, face, block, h, tint);
+    else put(bucket, wall, face, block, face.width * 0.92, h, face.depth * 0.9, 0, h * 0.5 + 0.12, -0.15, tint);
     addRoof(bucket, mats.shingle!, face, block, h, style.rise, 0.4, "front", new THREE.Color(0x3a3438));
     addPane(windows, face, block, -0.7, h * 0.48, face.depth * 0.5 + 0.02, 0.55, h * 0.42, 0.08, "street", [3.4, 0.45, 0.55]);
     addPane(windows, face, block, 0.85, h * 0.48, face.depth * 0.5 + 0.02, 0.55, h * 0.42, 0.08, "street", [0.45, 0.7, 3.2]);
@@ -242,7 +384,8 @@ function buildBlock(
   }
 
   if (style.special === "diner") {
-    put(bucket, wall, face, block, face.width * 0.98, h - 0.15, face.depth * 0.96, 0, (h - 0.15) * 0.5 + 0.12, 0, tint);
+    if (block.interior) buildShell(bucket, wall, face, block, h - 0.15, tint);
+    else put(bucket, wall, face, block, face.width * 0.98, h - 0.15, face.depth * 0.96, 0, (h - 0.15) * 0.5 + 0.12, 0, tint);
     flatRoof(bucket, mats, face, block, h, 0.28);
     const awningY = Math.min(2.55, h * 0.68);
     put(
@@ -267,10 +410,14 @@ function buildBlock(
   const porchH = two ? 3.08 : Math.min(2.62, h * 0.72);
   const bodyN = -(porchD * 0.5);
   const bodyD = face.depth - porchD;
-  put(bucket, wall, face, block, face.width * 0.98, porchH - 0.16, bodyD, 0, (porchH - 0.16) * 0.5 + 0.16, bodyN, tint);
-  if (two) {
-    const upper = h - porchH;
-    put(bucket, wall, face, block, face.width * 0.98, upper, face.depth * 0.98, 0, porchH + upper * 0.5, 0, tint);
+  if (block.interior) {
+    buildShell(bucket, wall, face, block, h * 0.94, tint);
+  } else {
+    put(bucket, wall, face, block, face.width * 0.98, porchH - 0.16, bodyD, 0, (porchH - 0.16) * 0.5 + 0.16, bodyN, tint);
+    if (two) {
+      const upper = h - porchH;
+      put(bucket, wall, face, block, face.width * 0.98, upper, face.depth * 0.98, 0, porchH + upper * 0.5, 0, tint);
+    }
   }
   if (porchD > 0.2) {
     const pierY = (porchH - 0.16) * 0.5 + 0.16;
@@ -318,6 +465,14 @@ function buildBlock(
     tint,
   );
   cornice(bucket, mats.wood!, face, block, h);
+  if (block.kind === "mill") {
+    const silo = new THREE.CylinderGeometry(1.35, 1.45, h + 2.4, 8);
+    silo.translate(block.x + face.tx * face.width * 0.28, (h + 2.4) * 0.5, block.z + face.tz * face.width * 0.28);
+    bucket.add(mats.brick!, stamp(silo, tint));
+    const cap = new THREE.ConeGeometry(1.55, 1.1, 8);
+    cap.translate(block.x + face.tx * face.width * 0.28, h + 2.8, block.z + face.tz * face.width * 0.28);
+    bucket.add(mats.metal!, stamp(cap, new THREE.Color(0x5c5854)));
+  }
 }
 
 function addFacadeWindows(
@@ -765,13 +920,19 @@ function buildLamps(scene: THREE.Scene, mats: Record<string, THREE.MeshStandardM
 
 function buildTrees(scene: THREE.Scene, mats: Record<string, THREE.MeshStandardMaterial>, high: boolean): void {
   const spots: Array<[number, number, number]> = [];
-  const count = high ? 22 : 14;
-  for (let i = 0; i < count; i++) {
-    const a = (i / count) * Math.PI * 2 + 0.35;
-    const r = 33.4 + (i % 3) * 0.6;
-    const x = Math.cos(a) * r;
-    const z = Math.sin(a) * r;
-    if (!hitsBlock(x, z, 1.2)) spots.push([x, z, 0.85 + (i % 4) * 0.18]);
+  const rings = [
+    { count: high ? 16 : 10, r: 33.4 },
+    { count: high ? 18 : 11, r: 56 },
+  ];
+  for (const ring of rings) {
+    for (let i = 0; i < ring.count; i++) {
+      const a = (i / ring.count) * Math.PI * 2 + ring.r * 0.01;
+      const r = ring.r + (i % 3) * 0.55;
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r;
+      if (Math.hypot(x, z) > BOUNDARY - 1.5) continue;
+      if (!hitsBlock(x, z, 1.2) && surfaceAt(x, z) === "lawn") spots.push([x, z, 0.85 + (i % 4) * 0.18]);
+    }
   }
   for (const b of BLOCKS) {
     const corners: Array<[number, number]> = [
@@ -799,12 +960,12 @@ function buildTrees(scene: THREE.Scene, mats: Record<string, THREE.MeshStandardM
   const color = new THREE.Color();
   for (let i = 0; i < spots.length; i++) {
     const [x, z, s] = spots[i]!;
-    dummy.position.set(x, 0, z);
+    dummy.position.set(x, groundY(x, z), z);
     dummy.rotation.set(0, i, (i % 2 === 0 ? 1 : -1) * 0.08);
     dummy.scale.setScalar(s!);
     dummy.updateMatrix();
     trunks.setMatrixAt(i, dummy.matrix);
-    dummy.position.set(x, 2.55 * s!, z);
+    dummy.position.set(x, groundY(x, z) + 2.55 * s!, z);
     dummy.scale.set(1.15 * s!, 1.35 * s!, 1.15 * s!);
     dummy.rotation.set(0.1 * (i % 3), i * 0.7, 0);
     dummy.updateMatrix();
@@ -820,14 +981,14 @@ function buildCars(mats: Record<string, THREE.MeshStandardMaterial>, bucket: Buc
   const paints = [0x6e3030, 0xd8d0c2, 0x243028, 0x8a6238, 0x3a4048];
   let i = 0;
   for (const block of BLOCKS) {
-    if (block.kind === "boiler" || block.kind === "chapel") continue;
+    if (block.kind === "boiler" || block.kind === "chapel" || block.kind === "tower" || block.kind === "mausoleum") continue;
     const face = orient(block);
     const hd = face.depth * 0.5;
     const side = face.width * 0.22;
     const dist = 3.1;
     const x = block.x + face.nx * (hd + dist) + face.tx * side;
     const z = block.z + face.nz * (hd + dist) + face.tz * side;
-    if (hitsBlock(x, z, 0.8) || Math.hypot(x, z) > BOUNDARY - 2) continue;
+    if (hitsBlock(x, z, 0.8) || Math.hypot(x, z) > BOUNDARY - 2 || groundY(x, z) > 0.35) continue;
     if (surfaceAt(x, z) === "island") continue;
     addCar(bucket, mats, x, z, Math.atan2(face.nx, face.nz), paints[i % paints.length]!);
     i++;
@@ -920,6 +1081,17 @@ function buildProps(
     bar.rotateZ(Math.PI / 2);
     bar.translate(swingX, 2.15, swingZ);
     bucket.add(mats.metal!, stamp(bar, DARK));
+  }
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2 + 0.2;
+    const rad = 5.5 + (i % 3) * 1.3;
+    const x = 2 + Math.cos(a) * rad;
+    const z = -48 + Math.sin(a) * rad * 0.75;
+    if (hitsBlock(x, z, 0.45) || Math.hypot(x, z) > BOUNDARY - 2) continue;
+    const stone = new THREE.BoxGeometry(0.42, 0.62 + (i % 3) * 0.12, 0.1);
+    stone.translate(x, 0.36, z);
+    stone.rotateY(a);
+    bucket.add(mats.stone!, stamp(stone, new THREE.Color(i % 4 === 0 ? 0x8a8078 : 0xc8c0b8)));
   }
   void windows;
 }

@@ -5,7 +5,7 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { makeFigure, makeLoot, type Figure } from "./figures";
-import { BLOCKS, type Block } from "./level";
+import { groundY, hitsBlock } from "./level";
 import { buildSuburb, type SuburbHandle } from "./suburb";
 import type { Actor, Pickup, Role } from "./sim";
 
@@ -22,6 +22,7 @@ export type RenderView = {
   viewerRole: Role | null;
   hidden: Set<string>;
   shake: number;
+  wards: Array<{ id: string; lit: boolean }>;
 };
 
 const COATS = [0x7a3a32, 0x3e4c56, 0x8a7d68, 0x3c3348];
@@ -79,6 +80,7 @@ export class DreamRenderer {
   private readonly ash: THREE.BufferGeometry;
   private readonly monsterLight: THREE.PointLight;
   private readonly high: boolean;
+  private moon: THREE.DirectionalLight | null = null;
   private orbit = 0.4;
   private time = 0;
   private shake = 0;
@@ -102,7 +104,7 @@ export class DreamRenderer {
     renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer = renderer;
     this.scene.background = new THREE.Color(0x100a10);
-    this.scene.fog = new THREE.FogExp2(0x120c12, this.high ? 0.0165 : 0.02);
+    this.scene.fog = new THREE.FogExp2(0x120c12, this.high ? 0.0115 : 0.0145);
 
     this.buildLights();
     this.suburb = buildSuburb(this.scene, renderer, this.high);
@@ -157,8 +159,10 @@ export class DreamRenderer {
       light.intensity = (this.high ? 16 : 10) * (0.9 + Math.sin(this.time * 1.7 + i * 1.3) * 0.08);
     });
     this.driftAsh(dt);
+    this.followMoon(view);
     this.syncActors(dt, view);
     this.syncPickups(view);
+    this.syncWards(view);
     if (this.composer) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
   }
@@ -202,17 +206,18 @@ export class DreamRenderer {
     let dist = view.viewerRole === "somnarch" ? 7.1 : 5.35;
     if (view.mode === "menu" || view.mode === "end") {
       yaw = this.orbit;
-      pitch = view.mode === "end" ? 0.86 : 0.62;
-      dist = view.mode === "end" ? 26 : 22;
+      pitch = view.mode === "end" ? 0.86 : 0.58;
+      dist = view.mode === "end" ? 34 : 32;
       tx = 0;
       tz = 2;
     }
+    const gy = groundY(tx, tz);
     const horiz = dist * Math.cos(pitch);
     const fx = -Math.sin(yaw);
     const fz = -Math.cos(yaw);
     let cx = tx - fx * horiz;
     let cz = tz - fz * horiz;
-    const cy = Math.max(0.55, 1.45 + dist * Math.sin(pitch));
+    const cy = Math.max(0.55, 1.45 + dist * Math.sin(pitch)) + gy;
     if (view.mode === "play") {
       const clamped = pullIn(tx, tz, cx, cz);
       cx = clamped.x;
@@ -230,7 +235,7 @@ export class DreamRenderer {
       this.camera.position.x += (Math.random() - 0.5) * this.shake;
       this.camera.position.y += (Math.random() - 0.5) * this.shake * 0.6;
     }
-    this.look.set(tx, view.viewerRole === "somnarch" ? 1.55 : 1.25, tz);
+    this.look.set(tx, (view.viewerRole === "somnarch" ? 1.55 : 1.25) + gy, tz);
     this.camera.lookAt(this.look);
   }
 
@@ -263,11 +268,12 @@ export class DreamRenderer {
       }
       const moving = Math.hypot(actor.vx, actor.vz);
       const bob = actor.dead || actor.downed ? 0 : Math.sin(this.time * 8 + fig.seed) * Math.min(0.045, moving * 0.006);
-      const y = actor.dead ? -1.7 : actor.downed ? -0.7 : bob;
+      const lift = groundY(g.position.x, g.position.z);
+      const y = lift + (actor.dead ? -1.7 : actor.downed ? -0.7 : bob);
       g.position.y += (y - g.position.y) * (1 - Math.exp(-6 * dt));
       g.rotation.z = actor.downed ? 1.15 : 0;
       g.visible = !(actor.dead && g.position.y < -1.45) && !view.hidden.has(actor.id);
-      fig.ring.visible = actor.lucid && !actor.dead;
+      fig.ring.visible = !actor.dead && (actor.lucid || (actor.markT > 0 && view.viewerRole === "somnarch"));
       const stride = actor.dead || actor.downed ? 0 : Math.min(1, moving * 0.14);
       const phase = this.time * (fig.monster ? 6.2 : 9.2) + fig.seed;
       const amp = fig.monster ? 0.42 : 0.62;
@@ -275,7 +281,11 @@ export class DreamRenderer {
       fig.legR.rotation.x = Math.sin(phase + Math.PI) * amp * stride;
       fig.offArm.rotation.x = -0.2 + Math.sin(phase) * 0.45 * stride;
       fig.arm.rotation.x = -0.22 - actor.swing * 1.55 + Math.sin(phase + Math.PI) * 0.2 * stride * (1 - actor.swing);
-      fig.coat.emissiveIntensity = actor.lucid ? 0.5 : fig.monster ? 0.42 : 0.12;
+      const ghost = actor.veilT > 0 && local;
+      fig.coat.transparent = ghost;
+      fig.coat.opacity = ghost ? 0.42 : 1;
+      fig.coat.depthWrite = !ghost;
+      fig.coat.emissiveIntensity = ghost ? 0.85 : actor.lucid ? 0.5 : fig.monster ? 0.42 : 0.12;
       if (actor.swing > 0.65) fig.coat.emissive.setHex(0xffe1c4);
       else fig.coat.emissive.setHex(fig.monster ? 0x3a0c08 : actor.lucid ? 0x5a4630 : 0x14080c);
       if (!fig.monster) fig.eyes.color.setHex(actor.lucid ? 0xe4d3b0 : 0x1a1214);
@@ -305,7 +315,7 @@ export class DreamRenderer {
         this.pickupRoot.add(mesh);
         this.loots.set(p.id, mesh);
       }
-      mesh.position.set(p.x, 0, p.z);
+      mesh.position.set(p.x, groundY(p.x, p.z), p.z);
       mesh.visible = show && !p.taken;
       mesh.rotation.y += 0.01;
     }
@@ -337,6 +347,7 @@ export class DreamRenderer {
     this.scene.add(new THREE.HemisphereLight(0x8e98b8, 0x2a1216, this.high ? 0.38 : 0.62));
     this.scene.add(new THREE.AmbientLight(0x1a1218, this.high ? 0.14 : 0.28));
     const moon = new THREE.DirectionalLight(0xc9d6ff, this.high ? 2.45 : 2.15);
+    this.moon = moon;
     moon.position.set(28, 48, -18);
     moon.target.position.set(0, 0, 0);
     this.scene.add(moon.target);
@@ -384,6 +395,22 @@ export class DreamRenderer {
     return geo;
   }
 
+  private followMoon(view: RenderView): void {
+    if (!this.moon || view.mode !== "play") return;
+    const y = groundY(view.targetX, view.targetZ);
+    this.moon.target.position.set(view.targetX, y, view.targetZ);
+    this.moon.position.set(view.targetX + 28, y + 48, view.targetZ - 18);
+  }
+
+  private syncWards(view: RenderView): void {
+    for (const ward of this.suburb.wards) {
+      const lit = view.wards.some((w) => w.id === ward.id && w.lit);
+      ward.mat.emissive.setHex(lit ? 0xffb060 : 0x4a180e);
+      ward.mat.emissiveIntensity = lit ? 2.4 : 0.35;
+      if (ward.light) ward.light.intensity = lit ? 12 : 0.35;
+    }
+  }
+
   private buildShowcase(): void {
     const dreamer = makeFigure(COATS[0]!, false, 0);
     dreamer.group.position.set(-2.4, 0, 5.4);
@@ -404,15 +431,11 @@ function pullIn(px: number, pz: number, cx: number, cz: number): { x: number; z:
     const t = i / steps;
     const x = px + (cx - px) * t;
     const z = pz + (cz - pz) * t;
-    if (BLOCKS.some((b) => inside(b, x, z))) return { x: lx, z: lz };
+    if (hitsBlock(x, z, 0.2)) return { x: lx, z: lz };
     lx = x;
     lz = z;
   }
   return { x: cx, z: cz };
-}
-
-function inside(b: Block, x: number, z: number): boolean {
-  return Math.abs(x - b.x) <= b.w * 0.5 + 0.25 && Math.abs(z - b.z) <= b.d * 0.5 + 0.25;
 }
 
 /** Hide the menu mannequins once a real match is on the cul-de-sac. */

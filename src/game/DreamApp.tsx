@@ -198,7 +198,7 @@ export function DreamApp() {
           <p data-hud="cds" className="text-xs text-moon" />
           {!coarse ? (
             <p className="text-xs text-muted">
-              <kbd>WASD</kbd> move <kbd>Shift</kbd> sprint <kbd>Space</kbd> dodge <kbd>E</kbd> wake <kbd>F</kbd> item <kbd>Q</kbd> pulse <kbd>LMB</kbd> strike <kbd>Esc</kbd> pause
+              <kbd>WASD</kbd> move <kbd>Shift</kbd> sprint <kbd>Space</kbd> dodge <kbd>E</kbd> rite <kbd>F</kbd> item <kbd>Q</kbd> veil/pulse <kbd>R</kbd> tether/stitch <kbd>LMB</kbd> strike <kbd>Esc</kbd> pause
             </p>
           ) : null}
         </div>
@@ -297,9 +297,9 @@ function Menu(props: {
         </button>
       </form>
       <div className="mt-2 border-t border-line pt-4 text-sm leading-relaxed text-muted">
-        <p>Gather four latch-keys, then hold wake at the clock altar. You become Lucid.</p>
-        <p className="mt-2">Lucid souls tether the others awake and can cut the Somnarch. It cannot die while anyone still sleeps.</p>
-        <p className="mt-2">The dream ends when the living are awake and the Somnarch is unmade — or when it stitches every dreamer under.</p>
+        <p>Gather four latch-keys, then hold the rite at the clock altar. You become Lucid. Q spends nerve to veil before that.</p>
+        <p className="mt-2">Lucid souls kindle three hearths — chapel, mill, mausoleum — and press R to tether the others. The Somnarch can snuff a hearth and stitch you still.</p>
+        <p className="mt-2">It dies only when every living dreamer is Lucid and every hearth burns. Until then, chase it and it gets back up.</p>
         <p className="mt-2">Circles are for friends on a direct link, not a ranked pit. Empty souls are filled by the dream.</p>
       </div>
       <button type="button" className="text-left text-sm text-moon" onClick={props.onMute}>
@@ -437,6 +437,7 @@ function TouchPad({ session }: { session: RefObject<DreamSession | null> }) {
         <TouchButton label="Wake" on={(down) => session.current?.setTouchFlag("interact", down)} />
         <TouchButton label="Item" on={(down) => session.current?.setTouchFlag("use", down)} />
         <TouchButton label="Pulse" on={(down) => session.current?.setTouchFlag("abl", down)} />
+        <TouchButton label="Rite" on={(down) => session.current?.setTouchFlag("kit", down)} />
         <TouchButton label="Sprint" on={(down) => session.current?.setTouchFlag("sprint", down)} />
       </div>
     </div>
