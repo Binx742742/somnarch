@@ -671,7 +671,7 @@ export class DreamSession {
         el.style.display = "none";
         return;
       }
-      const p = this.renderer.project(a.x, a.downed ? 1.1 : 2.25, a.z, rect.width, rect.height);
+      const p = this.renderer.project(a.x, a.downed ? 1.1 : a.role === "somnarch" ? 2.9 : 2.15, a.z, rect.width, rect.height);
       if (!p.visible || p.x < -40 || p.y < -40 || p.x > rect.width + 40 || p.y > rect.height + 40) {
         el.style.display = "none";
         return;
