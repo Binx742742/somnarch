@@ -27,6 +27,7 @@ function collectHud(root: HTMLDivElement): HudNodes {
     role: q("role"),
     clock: q("clock"),
     checklist: q("checklist"),
+    journal: q("journal"),
     mood: q("mood"),
     moodLabel: q("mood-label"),
     lock: q("lock"),
@@ -126,7 +127,7 @@ export function DreamApp() {
           <p className="font-display text-xs tracking-widest text-moon">FIVE-SOUL HORROR</p>
           <h1 className="mt-2 font-display text-4xl text-fg md:text-5xl">SOMNARCH</h1>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-muted">
-            Four dreamers. One stitched butcher. Latch the porch when he is close, kindle the hearths, or be sewn into the street.
+            Four dreamers. One stitched butcher. Listen at the pale motes, latch the porch when he is close, or be sewn into the street.
           </p>
           {bootError ? <p className="mt-4 text-sm text-blood">{bootError}</p> : null}
 
@@ -176,6 +177,7 @@ export function DreamApp() {
         <div className="absolute top-4 left-4 max-w-56">
           <p data-hud="role" className="font-display text-xs tracking-widest text-moon" />
           <div data-hud="checklist" className="mt-2 flex flex-col gap-1" />
+          <div data-hud="journal" className="mt-2 flex flex-col gap-0.5" />
           <p data-hud="objective" className="mt-2 max-w-56 text-xs leading-snug text-muted" />
         </div>
         <div className="absolute top-4 left-1/2 -translate-x-1/2 text-center">
