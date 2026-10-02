@@ -34,7 +34,7 @@
 
 @layer components {
   .dream-vignette {
-    background: radial-gradient(ellipse at center, transparent 42%, rgba(0, 0, 0, 0.78) 100%);
+    background: radial-gradient(ellipse at center, transparent 48%, rgba(0, 0, 0, 0.62) 100%);
   }
   .dream-hurt {
     background: radial-gradient(ellipse at center, transparent 20%, rgba(196, 69, 54, 0.72) 100%);
