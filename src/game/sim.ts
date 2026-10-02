@@ -970,7 +970,9 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
     }
     return;
   }
-  const tell = nearestTell(a);
+  const telling =
+    a.channel === 9 ? TELLS.find((t) => t.id === a.channelTarget && !(a.heard ?? []).includes(t.id) && Math.hypot(a.x - t.x, a.z - t.z) < 3.2) : undefined;
+  const tell = telling ?? nearestTell(a);
   if (tell) {
     if (a.channel !== 9 || a.channelTarget !== tell.id) {
       a.channel = 9;
