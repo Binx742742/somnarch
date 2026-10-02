@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "SOMNARCH",
+      "hasCanvas": true,
+      "bodyTextLen": 587,
+      "bodyTextHash": "48d033a53648f958012a0255f1e2a57eb3b80a95b50a4e089239eced4284cef9",
+      "bodyTextPrefix": "FIVE-SOUL HORROR SOMNARCH Four dreamers. One stitched butcher. W",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "SOMNARCH",
+      "hasCanvas": true,
+      "bodyTextLen": 587,
+      "bodyTextHash": "48d033a53648f958012a0255f1e2a57eb3b80a95b50a4e089239eced4284cef9",
+      "bodyTextPrefix": "FIVE-SOUL HORROR SOMNARCH Four dreamers. One stitched butcher. W",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json",
+  "divergesFromBaseline": false,
+  "baselineReasons": []
+}
