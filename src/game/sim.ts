@@ -7,6 +7,7 @@ import {
   MONSTER_SPAWN,
   PATROL,
   SHORTCUTS,
+  TELLS,
   WARD_SPOTS,
   doorSpots,
   lineBlocked,
@@ -58,8 +59,8 @@ export type Actor = {
   dodgeT: number;
   stun: number;
   iframes: number;
-  /** 0 none, 1 wake, 2 revive, 3 kindle, 4 snuff, 5 latch, 6 break, 7 shortcut, 8 crank */
-  channel: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+  /** 0 none, 1 wake, 2 revive, 3 kindle, 4 snuff, 5 latch, 6 break, 7 shortcut, 8 crank, 9 listen */
+  channel: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
   channelT: number;
   channelTarget: string;
   items: ItemKind[];
@@ -90,6 +91,10 @@ export type Actor = {
   snareCd: number;
   sawLight: boolean;
   usedReset: boolean;
+  /** Whisper ids this dreamer has heard. */
+  heard: string[];
+  /** Somnarch heavy-cut windup. Pays off at 0 after it has been set. */
+  commitT: number;
 };
 
 export type Snare = { id: string; x: number; z: number };
@@ -151,6 +156,8 @@ export type SimEvent =
   | { type: "snuff" }
   | { type: "stitch" }
   | { type: "door"; broken: boolean }
+  | { type: "listen" }
+  | { type: "commit" }
   | { type: "win" }
   | { type: "lose" };
 
@@ -167,6 +174,9 @@ const BREAK_TIME = 2.1;
 const DOOR_HITS = 3;
 const DOOR_R = 1.62;
 const OPEN_TIME = 150;
+const LISTEN_R = 1.75;
+const LISTEN_TIME = 0.95;
+const COMMIT_TIME = 0.75;
 const HOP_R = 1.7;
 const ALTAR_R = 3.35;
 const WARD_R = 2.15;
@@ -245,6 +255,8 @@ function blankActor(partial: Pick<Actor, "id" | "name" | "role" | "bot" | "x" | 
     snareCd: 0,
     sawLight: false,
     usedReset: false,
+    heard: [],
+    commitT: 0,
   };
 }
 
@@ -958,6 +970,23 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
     }
     return;
   }
+  const tell = nearestTell(a);
+  if (tell) {
+    if (a.channel !== 9 || a.channelTarget !== tell.id) {
+      a.channel = 9;
+      a.channelTarget = tell.id;
+      a.channelT = 0;
+    }
+    a.channelT += dt;
+    if (a.channelT >= LISTEN_TIME) {
+      if (!a.heard.includes(tell.id)) a.heard.push(tell.id);
+      a.channel = 0;
+      a.channelT = 0;
+      say(m, tell.line);
+      events.push({ type: "listen" });
+    }
+    return;
+  }
   const threat = monsterOf(m);
   const openDoor = nearestDoor(m, a, false);
   if (openDoor && threat && !threat.dead && dist(a, threat) < 16) {
@@ -1035,13 +1064,71 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
   a.channelT = 0;
 }
 
+function nearestTell(a: Actor): (typeof TELLS)[number] | null {
+  if (a.role !== "dreamer") return null;
+  const heard = a.heard ?? [];
+  let best: (typeof TELLS)[number] | null = null;
+  let bestD = LISTEN_R;
+  for (const tell of TELLS) {
+    if (heard.includes(tell.id)) continue;
+    const d = Math.hypot(a.x - tell.x, a.z - tell.z);
+    if (d < bestD) {
+      bestD = d;
+      best = tell;
+    }
+  }
+  return best;
+}
+
+/** Heavy cut: telegraph, then the hit. Returns true when this frame is spent winding up or paying off. */
+function tickCommit(m: Match, a: Actor, dt: number, events: SimEvent[]): boolean {
+  if (a.role !== "somnarch" || !a.commitT || a.commitT <= 0) return false;
+  a.commitT -= dt;
+  a.vx = 0;
+  a.vz = 0;
+  a.spd = 0;
+  a.swing = Math.max(a.swing, 0.45);
+  if (a.commitT > 0) return true;
+  a.commitT = 0;
+  a.swing = 1;
+  a.attackCd = 0.96;
+  a.stalk = 12;
+  let hit = false;
+  for (const o of m.actors) {
+    if (o.role !== "dreamer" || o.dead || o.downed) continue;
+    if (o.dodgeT > 0 || o.iframes > 0.05) continue;
+    if (m.time < OPEN_TIME && dist(a, o) > 2.2) continue;
+    if (!inArc(a.x, a.z, a.yaw, o.x, o.z, 2.25, 1.15)) continue;
+    hurtDreamer(m, o, 52, events);
+    hit = true;
+  }
+  if (!hit) say(m, "The heavy cut finds only air.");
+  events.push({ type: "swing", who: a.id });
+  return true;
+}
+
 function strike(m: Match, a: Actor, aimYaw: number, events: SimEvent[]): void {
   if (a.attackCd > 0 || a.dead || a.stun > 0 || a.downed) return;
+  if (a.commitT > 0) return;
   a.swing = 1;
   a.veilT = 0;
   a.yaw = approachYaw(a.yaw, aimYaw, 20, 1 / 60);
-  events.push({ type: "swing", who: a.id });
   if (a.role === "somnarch") {
+    let heavy = false;
+    if (a.stalk >= 80) {
+      for (const o of m.actors) {
+        if (o.role !== "dreamer" || o.dead || o.downed) continue;
+        if (m.time < OPEN_TIME && dist(a, o) > 2.2) continue;
+        if (inArc(a.x, a.z, a.yaw, o.x, o.z, 2.25, 1.15)) heavy = true;
+      }
+    }
+    if (heavy) {
+      a.commitT = COMMIT_TIME;
+      a.swing = 0.4;
+      events.push({ type: "commit" });
+      return;
+    }
+    events.push({ type: "swing", who: a.id });
     a.attackCd = 0.96;
     let hitSomeone = false;
     for (const o of m.actors) {
@@ -1057,12 +1144,14 @@ function strike(m: Match, a: Actor, aimYaw: number, events: SimEvent[]): void {
     }
     if (!hitSomeone) breakDoor(m, a, events);
   } else if (a.lucid) {
+    events.push({ type: "swing", who: a.id });
     a.attackCd = 0.9;
     const mon = monsterOf(m);
     if (mon && !mon.dead && inArc(a.x, a.z, a.yaw, mon.x, mon.z, 3.15, 1.25)) {
       damageMonster(m, 16, events);
     }
   } else {
+    events.push({ type: "swing", who: a.id });
     a.attackCd = 1.15;
     const mon = monsterOf(m);
     if (mon && !mon.dead && inArc(a.x, a.z, a.yaw, mon.x, mon.z, 2.25, 1.1)) {
@@ -1522,6 +1611,7 @@ export function step(m: Match, inputs: Map<string, Input>, dt: number): SimEvent
     if (a.dead && a.role === "somnarch") continue;
     decay(a, dt);
     if (a.dead) continue;
+    if (tickCommit(m, a, dt, events)) continue;
     if (a.bot) tickBot(m, a, dt, events);
     else tickHuman(m, a, inputs.get(a.id), dt, events);
     tickMood(m, a, dt);
@@ -1553,7 +1643,7 @@ export function objectiveFor(m: Match, id: string): string {
   }
   if (me.dead) return "You were stitched under. The others still dream.";
   if (me.downed) return "You are bleeding out. Call for a tether.";
-  if (m.time < OPEN_TIME && !me.lucid) return "He is still in the far yards. Find a porch light, then the keys.";
+  if (m.time < OPEN_TIME && !me.lucid) return "He is still in the far yards. Listen at a pale mote, then find the keys.";
   if (!me.lucid) {
     if (me.fragments >= WAKE_NEED) return `Hold wake at the clock altar. ${hearthLine}`;
     return `Latch-keys ${me.fragments}/${WAKE_NEED}. Q veils. Wake, then kindle the hearths.`;
@@ -1573,6 +1663,9 @@ export function promptFor(m: Match, id: string): string {
   if (me.channel === 6) return "Forcing the latch";
   if (me.channel === 7) return "Slipping through";
   if (me.channel === 8) return "Cranking";
+  if (me.channel === 9) return "Listening";
+  const winding = monsterOf(m);
+  if (me.role === "dreamer" && winding && winding.commitT > 0 && dist(me, winding) < 16) return "Dodge the cut";
   const hop = nearestShortcut(me);
   if (hop) {
     if (hop.sc.kind === "fence") return "Vault";
@@ -1581,6 +1674,7 @@ export function promptFor(m: Match, id: string): string {
   }
   const car = nearestCar(m, me);
   if (car) return "Crank";
+  if (me.role === "dreamer" && nearestTell(me)) return "Hold to listen";
   if (me.role === "somnarch") {
     const down = m.actors.find((a) => a.downed && dist(me, a) < 2.4);
     if (down) return "Strike to finish";
@@ -1629,6 +1723,7 @@ export function checklistFor(m: Match, id: string): CheckRow[] {
   }
   const rows: CheckRow[] = [
     { label: "Find a porch light", done: me.sawLight },
+    { label: `Whispers ${Math.min(me.heard?.length ?? 0, TELLS.length)}/${TELLS.length}`, done: (me.heard?.length ?? 0) >= TELLS.length },
     { label: "Learn a way out", done: me.usedReset },
     { label: "Latch a door", done: m.taughtLatch },
     { label: `Latch-keys ${Math.min(me.fragments, WAKE_NEED)}/${WAKE_NEED}`, done: me.lucid || me.fragments >= WAKE_NEED },
@@ -1660,6 +1755,7 @@ export const RULES = {
   SNUFF_TIME,
   LATCH_TIME,
   BREAK_TIME,
+  LISTEN_TIME,
   HOP_TIME: 0.8,
   CRANK_TIME: 1.15,
   CELLAR_SLOW: 2.4,

@@ -108,6 +108,14 @@ export class DreamAudio {
     this.noise(140, 0.1, 0.12);
     this.tone(196, 0.16, "square", 0.04);
   }
+  listen(): void {
+    this.tone(466, 0.16, "sine", 0.035);
+    this.tone(698, 0.28, "triangle", 0.02);
+  }
+  commit(): void {
+    this.tone(98, 0.22, "sawtooth", 0.05);
+    this.tone(73, 0.38, "square", 0.03);
+  }
   door(broken: boolean): void {
     if (broken) {
       this.noise(90, 0.18, 0.16);

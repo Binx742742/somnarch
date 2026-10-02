@@ -49,6 +49,11 @@
     background-image: radial-gradient(rgba(240, 230, 216, 0.55) 0.6px, transparent 0.6px);
     background-size: 3px 3px;
   }
+  .whisper-line {
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    color: var(--color-moon);
+  }
   .hunt-row {
     display: flex;
     align-items: center;

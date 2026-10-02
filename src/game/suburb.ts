@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { BLOCKS, BOUNDARY, CAR_SPOTS, HILL, LAMPS, SHORTCUTS, WARD_SPOTS, doorPoses, doorSpots, groundY, hitsBlock, type Block } from "./level";
+import { BLOCKS, BOUNDARY, CAR_SPOTS, HILL, LAMPS, SHORTCUTS, TELLS, WARD_SPOTS, doorPoses, doorSpots, groundY, hitsBlock, type Block } from "./level";
 import { createGround } from "./ground";
 import { orient, surfaceAt, type Front } from "./roads";
 import { createSuburbTextures, type SuburbTextures } from "./textures";
@@ -107,6 +107,7 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
   buildCars(mats, bucket);
   buildProps(mats, bucket, windows);
   buildRoutes(mats, bucket, windows);
+  buildWhispers(scene);
   buildFloaters(scene);
   buildSmoke(scene);
   buildHill(scene);
@@ -955,6 +956,21 @@ function addLampShaft(scene: THREE.Scene, x: number, y: number, z: number, opaci
   shaft.castShadow = false;
   shaft.name = "lamp-shaft";
   scene.add(shaft);
+}
+
+function buildWhispers(scene: THREE.Scene): void {
+  const mote = new THREE.MeshBasicMaterial({ color: 0xe4d3b0, transparent: true, opacity: 0.9 });
+  const post = new THREE.MeshStandardMaterial({ color: 0x2c2826, roughness: 0.8 });
+  for (const tell of TELLS) {
+    const y = groundY(tell.x, tell.z);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 1.15, 5), post);
+    pole.position.set(tell.x, y + 0.55, tell.z);
+    pole.castShadow = false;
+    const glow = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), mote);
+    glow.position.set(tell.x, y + 1.25, tell.z);
+    glow.name = `whisper-${tell.id}`;
+    scene.add(pole, glow);
+  }
 }
 
 function buildRoutes(mats: Record<string, THREE.MeshStandardMaterial>, bucket: Bucket, windows: THREE.BufferGeometry[]): void {

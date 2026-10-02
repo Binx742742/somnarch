@@ -154,6 +154,54 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "grave-chapel", kind: "cellar", ax: 2, az: -48, bx: 20, bz: 14 },
 ];
 
+/** Porch whispers. One short listen each. They teach the night; they are not a win gate. */
+export type Tell = { id: string; title: string; line: string; x: number; z: number };
+
+export const TELLS: Tell[] = [
+  {
+    id: "watch",
+    title: "The watch",
+    line: "He goes still before the heavy cut. Dodge when the air tightens.",
+    x: -52,
+    z: 16,
+  },
+  {
+    id: "porch",
+    title: "The porch",
+    line: "Lamp light is a small island. Catch your breath there, then move.",
+    x: -44,
+    z: -36,
+  },
+  {
+    id: "cellar",
+    title: "The cellar",
+    line: "The school basement comes up in the barn. He can follow, slowly.",
+    x: 16,
+    z: -54,
+  },
+  {
+    id: "latch",
+    title: "The latch",
+    line: "A latched door buys a breath. It also marks where you stood.",
+    x: 48,
+    z: 28,
+  },
+  {
+    id: "road",
+    title: "The blacktop",
+    line: "A sprint on the road carries. Walk the grass when you need to hide.",
+    x: -8,
+    z: 4,
+  },
+  {
+    id: "line",
+    title: "The line",
+    line: "Three phone pieces keep a bleeding dreamer longer. Search the yards.",
+    x: 28,
+    z: 8,
+  },
+];
+
 export const CAR_SPOTS: Array<{ id: string; x: number; z: number }> = [
   { id: "cul-car", x: 14, z: -6 },
   { id: "west-car", x: -14, z: 6 },

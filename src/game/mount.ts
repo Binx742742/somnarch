@@ -1,6 +1,6 @@
 import { P2PRoom, type PeerInfo } from "@/lib/multiplayer";
 import { DreamAudio } from "./audio";
-import { BOUNDARY, BLOCKS, CAR_SPOTS, SHORTCUTS, doorSpots, groundY, moveCircle, setLatchedDoors } from "./level";
+import { BOUNDARY, BLOCKS, CAR_SPOTS, SHORTCUTS, TELLS, doorSpots, groundY, moveCircle, setLatchedDoors } from "./level";
 import { DreamRenderer, type RenderView } from "./renderer";
 import {
   RULES,
@@ -56,6 +56,7 @@ export type HudNodes = {
   role: HTMLElement | null;
   clock: HTMLElement | null;
   checklist: HTMLElement | null;
+  journal: HTMLElement | null;
   mood: HTMLElement | null;
   moodLabel: HTMLElement | null;
   lock: HTMLElement | null;
@@ -506,6 +507,8 @@ export class DreamSession {
       else if (e.type === "snuff") this.audio.snuff();
       else if (e.type === "stitch") this.audio.stitch();
       else if (e.type === "door") this.audio.door(e.broken);
+      else if (e.type === "listen") this.audio.listen();
+      else if (e.type === "commit") this.audio.commit();
     }
   }
 
@@ -597,6 +600,7 @@ export class DreamSession {
     setText(this.hud.role, roleLabel(me));
     setText(this.hud.clock, clockText(this.match.time));
     paintChecklist(this.hud.checklist, checklistFor(this.match, me.id));
+    paintJournal(this.hud.journal, me.heard ?? []);
     const quiet = me.role === "somnarch" ? me.spd < 2.8 && me.stalk > 18 : me.fear < 22;
     const fade = quiet ? "0.32" : "1";
     for (const el of [this.hud.checklist, this.hud.objective, this.hud.clock, this.hud.map, this.hud.cds]) {
@@ -634,7 +638,9 @@ export class DreamSession {
                     : RULES.HOP_TIME
                   : me.channel === 8
                     ? RULES.CRANK_TIME
-                    : RULES.WAKE_TIME;
+                    : me.channel === 9
+                      ? RULES.LISTEN_TIME
+                      : RULES.WAKE_TIME;
     if (this.hud.channel) this.hud.channel.hidden = me.channel === 0;
     if (this.hud.channelFill) this.hud.channelFill.style.transform = `scaleX(${Math.min(1, me.channelT / channelMax)})`;
     if (this.hud.banner) {
@@ -1103,7 +1109,7 @@ function snapOf(m: Match): SnapState {
     log: m.log,
     banner: m.banner,
     bannerT: m.bannerT,
-    actors: m.actors.map((a) => ({ ...a, items: a.items.slice() })),
+    actors: m.actors.map((a) => ({ ...a, items: a.items.slice(), heard: (a.heard ?? []).slice() })),
     pickups: m.pickups.map((p) => ({ ...p })),
     wards: m.wards.map((w) => ({ ...w })),
     doors: m.doors.map((d) => ({ ...d })),
@@ -1134,6 +1140,22 @@ function paintHearts(el: HTMLElement | null, hp: number, max: number): void {
       heart.innerHTML =
         '<svg viewBox="0 0 20 18" width="14" height="12" aria-hidden="true"><path fill="currentColor" d="M10 16.2 2.4 8.6A4.2 4.2 0 0 1 10 4.2 4.2 4.2 0 0 1 17.6 8.6Z"/></svg>';
       return heart;
+    }),
+  );
+}
+
+function paintJournal(el: HTMLElement | null, heard: string[]): void {
+  if (!el) return;
+  const sig = heard.join("|");
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
+  el.replaceChildren(
+    ...heard.map((id) => {
+      const tell = TELLS.find((t) => t.id === id);
+      const p = document.createElement("p");
+      p.className = "whisper-line";
+      p.textContent = tell?.title ?? id;
+      return p;
     }),
   );
 }
