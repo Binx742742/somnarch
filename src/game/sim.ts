@@ -1,4 +1,5 @@
 import {
+  BELL,
   BLOCKS,
   CAR_SPOTS,
   DREAMER_SPAWNS,
@@ -21,7 +22,9 @@ export type Role = "dreamer" | "somnarch";
 export type WeaponKind = "iron" | "shears" | "lamp";
 export type PotionKind = "mend" | "haste" | "hush" | "ward";
 export type ItemKind = "bandage" | "adrenaline" | "clock" | PotionKind;
-export type PickupKind = "fragment" | "phone" | ItemKind | WeaponKind;
+/** One job the others cannot do. Dropped on death for someone else to pick up. */
+export type JobKind = "ear" | "bar" | "tend" | "rope";
+export type PickupKind = "fragment" | "phone" | ItemKind | WeaponKind | JobKind;
 
 export type Input = {
   ix: number;
@@ -63,8 +66,8 @@ export type Actor = {
   dodgeT: number;
   stun: number;
   iframes: number;
-  /** 0 none, 1 wake, 2 revive, 3 kindle, 4 snuff, 5 latch, 6 break, 7 shortcut, 8 crank, 9 listen */
-  channel: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+  /** 0 none, 1 wake, 2 revive, 3 kindle, 4 snuff, 5 latch, 6 break, 7 shortcut, 8 crank, 9 listen, 10 bell, 11 ambush */
+  channel: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
   channelT: number;
   channelTarget: string;
   items: ItemKind[];
@@ -107,6 +110,24 @@ export type Actor = {
   guard: number;
   /** Runner draught. Faster than the adrenaline buff. */
   hasteT: number;
+  /** Exclusive work. Null after it is dropped. */
+  job: JobKind | null;
+  /** This dreamer has latched a door. The checklist is personal. */
+  didLatch: boolean;
+  /** Scripted calm so a solo Somnarch can walk up and learn stitch. */
+  calmT: number;
+};
+
+export type FeedLine = { text: string; who: string; at: number };
+
+export type Ambush = {
+  kind: "gate" | "porch";
+  x: number;
+  z: number;
+  doorId: string;
+  life: number;
+  /** Unlatch this door if the ambush spoils or pays and we shut it. */
+  latchedIt: boolean;
 };
 
 export type Snare = { id: string; x: number; z: number };
@@ -152,9 +173,17 @@ export type Match = {
   phones: number;
   taughtLatch: boolean;
   phase: "play" | "win" | "lose";
-  log: string[];
+  log: FeedLine[];
   banner: string;
   bannerT: number;
+  /** Who the shared banner belongs to. Empty is the street. */
+  bannerWho: string;
+  bellCd: number;
+  bellRing: number;
+  bellStruck: boolean;
+  bellX: number;
+  bellZ: number;
+  ambush: Ambush | null;
 };
 
 export type SimEvent =
@@ -171,6 +200,8 @@ export type SimEvent =
   | { type: "stitch" }
   | { type: "door"; broken: boolean }
   | { type: "listen" }
+  | { type: "bell" }
+  | { type: "ambush" }
   | { type: "commit" }
   | { type: "win" }
   | { type: "lose" };
@@ -188,8 +219,13 @@ const BREAK_TIME = 2.1;
 const DOOR_HITS = 3;
 const DOOR_R = 1.62;
 const OPEN_TIME = 150;
-const LISTEN_R = 1.75;
+const LISTEN_R = 2.6;
 const LISTEN_TIME = 0.95;
+const RING_R = 2.1;
+const RING_TIME = 2.2;
+const AMBUSH_WIND = 0.9;
+const WALK_E = 6.5;
+const GRAB_R = 3.5;
 const COMMIT_TIME = 0.75;
 const HOP_R = 1.7;
 const ALTAR_R = 3.35;
@@ -275,6 +311,9 @@ function blankActor(partial: Pick<Actor, "id" | "name" | "role" | "bot" | "x" | 
     armLock: "",
     guard: 0,
     hasteT: 0,
+    job: null,
+    didLatch: false,
+    calmT: 0,
   };
 }
 
@@ -307,6 +346,22 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
       z: MONSTER_SPAWN[1],
     }),
   );
+  const jobs: JobKind[] = ["ear", "bar", "tend", "rope"];
+  const workers = [
+    ...actors.filter((a) => a.role === "dreamer" && !a.bot),
+    ...actors.filter((a) => a.role === "dreamer" && a.bot),
+  ];
+  workers.forEach((a, i) => {
+    a.job = jobs[i] ?? null;
+  });
+  if (monsterHuman) {
+    const witness = actors.find((a) => a.role === "dreamer" && a.bot);
+    if (witness && spotClear(64, 48)) {
+      witness.x = 64;
+      witness.z = 48;
+      witness.calmT = 28;
+    }
+  }
 
   const spots = shuffle(
     LOOT_SPOTS.filter(([x, z]) => spotClear(x, z)),
@@ -349,6 +404,7 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
     "ward",
   ];
   const fixed: Array<{ kind: PickupKind; x: number; z: number }> = [
+    { kind: "fragment", x: -86, z: 16 },
     { kind: "iron", x: -80, z: 22 },
     { kind: "mend", x: -84, z: 10 },
     { kind: "hush", x: -74, z: 18 },
@@ -392,9 +448,16 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
     phones: 0,
     taughtLatch: false,
     phase: "play",
-    log: ["The far yards are quiet. Learn the porches before he crosses town."],
-    banner: "Find a porch light. Keys, then the hearths. The butcher is still out.",
+    log: [{ text: "The far yards are quiet. Learn the porches before he crosses town.", who: "", at: 0 }],
+    banner: "Find a porch light. Hold E on the glowing mark. The butcher is still out.",
     bannerT: 5.5,
+    bannerWho: "",
+    bellCd: 0,
+    bellRing: 0,
+    bellStruck: false,
+    bellX: BELL.x,
+    bellZ: BELL.z,
+    ambush: null,
   };
 }
 
@@ -416,10 +479,11 @@ function clockLabel(t: number): string {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function say(m: Match, text: string): void {
-  m.log.unshift(text);
-  if (m.log.length > 6) m.log.length = 6;
+function say(m: Match, text: string, who = ""): void {
+  m.log.unshift({ text, who, at: m.time });
+  if (m.log.length > 8) m.log.length = 8;
   m.banner = text;
+  m.bannerWho = who;
   m.bannerT = 3.4;
 }
 
@@ -445,6 +509,7 @@ function decay(a: Actor, dt: number): void {
   a.swing = Math.max(0, a.swing - dt * 3.1);
   a.botTap = Math.max(0, a.botTap - dt);
   a.hearT = Math.max(0, a.hearT - dt);
+  a.calmT = Math.max(0, (a.calmT ?? 0) - dt);
   a.veilT = Math.max(0, a.veilT - dt);
   a.markT = Math.max(0, a.markT - dt);
   a.kitCd = Math.max(0, a.kitCd - dt);
@@ -674,6 +739,32 @@ function killDreamer(m: Match, a: Actor, events: SimEvent[]): void {
   a.downed = false;
   a.hp = 0;
   a.channel = 0;
+  if (a.job) {
+    m.pickups.push({
+      id: `job-${a.id}-${m.pickups.length}`,
+      kind: a.job,
+      x: a.x,
+      z: a.z,
+      taken: false,
+      cool: 0.7,
+    });
+    if (a.job === "tend") {
+      const ward = a.items.indexOf("ward");
+      if (ward >= 0) {
+        a.items.splice(ward, 1);
+        m.pickups.push({
+          id: `ward-${a.id}-${m.pickups.length}`,
+          kind: "ward",
+          x: a.x + 0.6,
+          z: a.z,
+          taken: false,
+          cool: 0.7,
+        });
+      }
+    }
+    say(m, `${a.name} drops the ${jobLabel(a.job).toLowerCase()} work.`);
+    a.job = null;
+  }
   say(m, `The Somnarch stitched ${a.name} under.`);
   events.push({ type: "death", who: a.id });
   const live = livingDreamers(m);
@@ -716,6 +807,18 @@ export function isWeapon(kind: string): kind is WeaponKind {
   return kind === "iron" || kind === "shears" || kind === "lamp";
 }
 
+export function isJob(kind: string): kind is JobKind {
+  return kind === "ear" || kind === "bar" || kind === "tend" || kind === "rope";
+}
+
+export function jobLabel(kind: string | null | undefined): string {
+  if (kind === "ear") return "Listener";
+  if (kind === "bar") return "Forcer";
+  if (kind === "tend") return "Tender";
+  if (kind === "rope") return "Ringer";
+  return "Unassigned";
+}
+
 export function weaponLabel(kind: string): string {
   if (kind === "iron") return "Hearth iron";
   if (kind === "shears") return "Tailor's shears";
@@ -740,28 +843,45 @@ function weaponBlurb(kind: WeaponKind): string {
   return "A flare hushes you and makes him flinch.";
 }
 
-function tryPickup(m: Match, a: Actor, events: SimEvent[]): void {
+function tryPickup(m: Match, a: Actor, events: SimEvent[], grab = false): void {
   if (a.role !== "dreamer" || a.dead || a.downed) return;
   for (const p of m.pickups) {
     if (p.taken || (p.cool ?? 0) > 0) continue;
-    if (dist(a, p) > 1.45) continue;
+    const reach = p.kind === "fragment" || p.kind === "phone" || isJob(p.kind) ? (grab ? GRAB_R : 1.45) : 1.45;
+    if (dist(a, p) > reach) continue;
     if (p.kind === "fragment") {
       if (a.fragments >= WAKE_NEED || a.lucid) continue;
       p.taken = true;
       a.fragments += 1;
-      say(m, `${a.name} latched a key (${a.fragments}/${WAKE_NEED}).`);
+      say(m, `${a.name} latched a key (${a.fragments}/${WAKE_NEED}).`, a.id);
       events.push({ type: "pick", who: a.id, kind: p.kind });
     } else if (p.kind === "phone") {
       p.taken = true;
       m.phones += 1;
-      say(m, `${a.name} found a phone piece (${m.phones}/3).`);
+      say(m, `${a.name} found a phone piece (${m.phones}/3).`, a.id);
       events.push({ type: "pick", who: a.id, kind: p.kind });
+    } else if (isJob(p.kind)) {
+      if (!a.job) {
+        p.taken = true;
+        a.job = p.kind;
+        a.armLock = "";
+        say(m, `${a.name} takes up the ${jobLabel(p.kind).toLowerCase()} work.`, a.id);
+        events.push({ type: "pick", who: a.id, kind: p.kind });
+      } else if (p.id !== a.armLock && a.job !== p.kind) {
+        const old = a.job;
+        a.job = p.kind;
+        p.kind = old;
+        p.cool = 0.85;
+        a.armLock = p.id;
+        say(m, `${a.name} swaps to the ${jobLabel(a.job).toLowerCase()} work.`, a.id);
+        events.push({ type: "pick", who: a.id, kind: a.job });
+      }
     } else if (isWeapon(p.kind)) {
       if (!a.weapon) {
         p.taken = true;
         a.weapon = p.kind;
         a.armLock = "";
-        say(m, `${a.name} lifts the ${weaponLabel(p.kind).toLowerCase()}. ${weaponBlurb(p.kind)}`);
+        say(m, `${a.name} lifts the ${weaponLabel(p.kind).toLowerCase()}. ${weaponBlurb(p.kind)}`, a.id);
         events.push({ type: "pick", who: a.id, kind: p.kind });
       } else if (p.id !== a.armLock && a.weapon !== p.kind) {
         const old = a.weapon;
@@ -769,13 +889,13 @@ function tryPickup(m: Match, a: Actor, events: SimEvent[]): void {
         p.kind = old;
         p.cool = 0.85;
         a.armLock = p.id;
-        say(m, `${a.name} swaps to the ${weaponLabel(a.weapon).toLowerCase()}. ${weaponBlurb(a.weapon)}`);
+        say(m, `${a.name} swaps to the ${weaponLabel(a.weapon).toLowerCase()}. ${weaponBlurb(a.weapon)}`, a.id);
         events.push({ type: "pick", who: a.id, kind: a.weapon });
       }
     } else if (a.items.length < 3) {
       p.taken = true;
       a.items.push(p.kind);
-      say(m, `${a.name} pockets ${itemLabel(p.kind).toLowerCase()}.`);
+      say(m, `${a.name} pockets ${itemLabel(p.kind).toLowerCase()}.`, a.id);
       events.push({ type: "pick", who: a.id, kind: p.kind });
     }
   }
@@ -805,7 +925,7 @@ function becomeLucid(m: Match, a: Actor, events: SimEvent[]): void {
   a.channelT = 0;
   a.downed = false;
   a.hp = Math.max(a.hp, 70);
-  say(m, `${a.name} is Lucid. The dream answers.`);
+  say(m, `${a.name} is Lucid. The dream answers.`, a.id);
   events.push({ type: "lucid", who: a.id });
   if (allLivingLucid(m)) {
     say(m, "Every living dreamer is awake. Unmake the Somnarch.");
@@ -815,25 +935,40 @@ function becomeLucid(m: Match, a: Actor, events: SimEvent[]): void {
 function drink(m: Match, a: Actor, it: ItemKind, events: SimEvent[]): void {
   if (it === "bandage" || it === "mend") {
     a.hp = Math.min(DREAMER_HP, a.hp + (it === "bandage" ? 48 : 42));
-    say(m, it === "bandage" ? `${a.name} bound a wound.` : `${a.name} drinks a mending draught. The cut closes.`);
+    say(m, it === "bandage" ? `${a.name} bound a wound.` : `${a.name} drinks a mending draught. The cut closes.`, a.id);
   } else if (it === "adrenaline") {
     a.stamina = Math.min(100, a.stamina + 70);
     a.buffT = Math.max(a.buffT, 4.2);
-    say(m, `${a.name} takes adrenaline. Breath comes back.`);
+    say(m, `${a.name} takes adrenaline. Breath comes back.`, a.id);
   } else if (it === "haste") {
     a.stamina = Math.min(100, a.stamina + 55);
     a.hasteT = Math.max(a.hasteT, 5.2);
-    say(m, `${a.name} drinks the runner draught. The street pulls.`);
+    say(m, `${a.name} drinks the runner draught. The street pulls.`, a.id);
   } else if (it === "hush") {
     a.veilT = Math.max(a.veilT, 4);
     a.nerve = Math.min(100, a.nerve + 22);
     a.fear = Math.max(0, a.fear - 28);
     a.hearT = 0;
     events.push({ type: "veil" });
-    say(m, `${a.name} drinks a hush. Breath leaves the street.`);
+    say(m, `${a.name} drinks a hush. Breath leaves the street.`, a.id);
   } else if (it === "ward") {
+    if (a.job !== "tend") {
+      if (a.items.length < 3) a.items.unshift(it);
+      else {
+        m.pickups.push({
+          id: `ward-back-${a.id}-${m.pickups.length}`,
+          kind: "ward",
+          x: a.x,
+          z: a.z,
+          taken: false,
+          cool: 0.4,
+        });
+      }
+      say(m, "Only the tender can break a ward draught.", a.id);
+      return;
+    }
     a.guard = 36;
-    say(m, `${a.name} drinks a ward. The next cut lands softer.`);
+    say(m, `${a.name} drinks a ward. The next cut lands softer.`, a.id);
   } else {
     const mon = monsterOf(m);
     if (mon && dist(a, mon) < 16) {
@@ -908,7 +1043,7 @@ function tether(m: Match, a: Actor, events: SimEvent[]): void {
     say(m, `${a.name} pulled ${ally.name} awake.`);
   } else {
     ally.fragments += 1;
-    say(m, `${a.name} tethered a latch-key to ${ally.name} (${ally.fragments}/${WAKE_NEED}).`);
+    say(m, `${a.name} tethered a latch-key to ${ally.name} (${ally.fragments}/${WAKE_NEED}).`, a.id);
   }
 }
 
@@ -1020,7 +1155,140 @@ function nearestCar(m: Match, a: Actor): Car | null {
   return best;
 }
 
+function nearBell(m: Match, a: Actor): boolean {
+  if (a.role !== "dreamer" || m.bellCd > 0) return false;
+  const reach = a.channel === 10 ? RING_R + 0.7 : RING_R;
+  return Math.hypot(a.x - m.bellX, a.z - m.bellZ) <= reach;
+}
+
+function resolveBell(m: Match, a: Actor, events: SimEvent[], complete: boolean): void {
+  const heldFor = a.channelT;
+  if (!complete && heldFor < 0.65) {
+    say(m, `${a.name} lets the bell go. The street stays quiet.`, a.id);
+    return;
+  }
+  const mon = monsterOf(m);
+  const rope = a.job === "rope";
+  if (rope && complete) {
+    if (mon && !mon.dead) {
+      mon.huntX = m.bellX;
+      mon.huntZ = m.bellZ;
+      mon.huntT = 16;
+      mon.hearT = Math.max(mon.hearT, 3);
+    }
+    m.bellCd = 36;
+    m.bellStruck = true;
+    m.bellRing = 4.5;
+    say(m, `${a.name} rings the bell. The butcher hears the street.`);
+    events.push({ type: "bell" });
+    return;
+  }
+  if (mon && !mon.dead) {
+    mon.huntX = m.bellX;
+    mon.huntZ = m.bellZ;
+    mon.huntT = 5;
+    mon.hearT = Math.max(mon.hearT, 1.2);
+  }
+  m.bellCd = 10;
+  m.bellRing = 1.8;
+  say(m, rope ? `${a.name} slips on the rope. A short clang.` : `${a.name} pulls the bell and it fails. The match holds.`);
+  events.push({ type: "bell" });
+}
+
+function nearestLamp(a: Actor, reach: number): [number, number] | null {
+  let best: [number, number] | null = null;
+  let bestD = reach;
+  for (const [x, z] of LAMPS) {
+    const d = Math.hypot(a.x - x, a.z - z);
+    if (d < bestD) {
+      bestD = d;
+      best = [x, z];
+    }
+  }
+  return best;
+}
+
+function ambushSpot(m: Match, a: Actor): { id: string; kind: "gate" | "porch"; x: number; z: number; doorId: string } | null {
+  const door = nearestDoor(m, a, false);
+  if (door) return { id: `gate-${door.id}`, kind: "gate", x: door.x, z: door.z, doorId: door.id };
+  const lamp = nearestLamp(a, 2.5);
+  if (!lamp) return null;
+  return { id: "porch", kind: "porch", x: lamp[0], z: lamp[1], doorId: "" };
+}
+
+function plantAmbush(m: Match, a: Actor, spot: { kind: "gate" | "porch"; x: number; z: number; doorId: string }): void {
+  let latchedIt = false;
+  if (spot.kind === "gate") {
+    const door = m.doors.find((d) => d.id === spot.doorId);
+    if (door && !door.latched) {
+      door.latched = true;
+      door.hits = 0;
+      latchedIt = true;
+      syncDoors(m);
+    }
+  }
+  m.ambush = { kind: spot.kind, x: spot.x, z: spot.z, doorId: spot.doorId, life: 20, latchedIt };
+  a.snareCd = 58;
+  a.channel = 0;
+  a.channelT = 0;
+  say(m, spot.kind === "gate" ? "The Somnarch latches a gate and waits." : "The Somnarch darkens a porch and waits.");
+}
+
+function clearAmbush(m: Match): void {
+  const trap = m.ambush;
+  if (!trap) return;
+  if (trap.latchedIt) {
+    const door = m.doors.find((d) => d.id === trap.doorId);
+    if (door) {
+      door.latched = false;
+      syncDoors(m);
+    }
+  }
+  m.ambush = null;
+}
+
+function springAmbush(m: Match, dreamer: Actor, events: SimEvent[]): void {
+  const mon = monsterOf(m);
+  dreamer.stun = Math.max(dreamer.stun, 0.9);
+  dreamer.markT = Math.max(dreamer.markT, 5);
+  dreamer.hearT = Math.max(dreamer.hearT, 0.6);
+  if (mon && !mon.dead) {
+    mon.huntX = dreamer.x;
+    mon.huntZ = dreamer.z;
+    mon.huntT = Math.max(mon.huntT, 10);
+    mon.stalk = Math.min(100, mon.stalk + 28);
+  }
+  say(m, `${dreamer.name} walks into the ambush.`);
+  events.push({ type: "ambush" });
+  clearAmbush(m);
+}
+
+function tickAmbush(m: Match, dt: number, events: SimEvent[]): void {
+  m.bellCd = Math.max(0, m.bellCd - dt);
+  m.bellRing = Math.max(0, m.bellRing - dt);
+  const trap = m.ambush;
+  if (!trap) return;
+  trap.life -= dt;
+  const reach = trap.kind === "gate" ? 1.8 : 2.2;
+  for (const dreamer of m.actors) {
+    if (dreamer.role !== "dreamer" || dreamer.dead) continue;
+    if (Math.hypot(dreamer.x - trap.x, dreamer.z - trap.z) > reach) continue;
+    springAmbush(m, dreamer, events);
+    return;
+  }
+  if (trap.life <= 0) {
+    say(m, "The ambush spoils.");
+    clearAmbush(m);
+  }
+}
+
 function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: SimEvent[]): void {
+  if (a.channel === 10 && (!held || a.dead || a.stun > 0 || a.downed)) {
+    resolveBell(m, a, events, false);
+    a.channel = 0;
+    a.channelT = 0;
+    return;
+  }
   if (!held || a.dead || a.stun > 0 || a.downed) {
     a.channel = 0;
     a.channelT = 0;
@@ -1068,13 +1336,19 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
       }
       return;
     }
+    const spot = ambushSpot(m, a);
+    if (spot && !m.ambush && a.snareCd <= 0) {
+      if (a.channel !== 11 || a.channelTarget !== spot.id) {
+        a.channel = 11;
+        a.channelTarget = spot.id;
+        a.channelT = 0;
+      }
+      a.channelT += dt;
+      if (a.channelT >= AMBUSH_WIND) plantAmbush(m, a, spot);
+      return;
+    }
     a.channel = 0;
     a.channelT = 0;
-    if (a.snareCd <= 0 && m.snares.length < 2) {
-      m.snares.push({ id: `snare-${m.snares.length}-${Math.floor(m.time * 10)}`, x: a.x, z: a.z });
-      a.snareCd = 16;
-      say(m, "The Somnarch strung a thread across the yard.");
-    }
     return;
   }
   const downed = nearestDowned(m, a);
@@ -1116,7 +1390,21 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
       a.usedReset = true;
       a.channel = 0;
       a.channelT = 0;
-      say(m, `${a.name} cranked a car and tore down the street.`);
+      say(m, `${a.name} cranked a car and tore down the street.`, a.id);
+    }
+    return;
+  }
+  if (nearBell(m, a)) {
+    if (a.channel !== 10) {
+      a.channel = 10;
+      a.channelTarget = "bell";
+      a.channelT = 0;
+    }
+    a.channelT += dt;
+    if (a.channelT >= RING_TIME) {
+      resolveBell(m, a, events, true);
+      a.channel = 0;
+      a.channelT = 0;
     }
     return;
   }
@@ -1134,7 +1422,7 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
       if (!a.heard.includes(tell.id)) a.heard.push(tell.id);
       a.channel = 0;
       a.channelT = 0;
-      say(m, tell.line);
+      say(m, tell.line, a.id);
       events.push({ type: "listen" });
     }
     return;
@@ -1154,7 +1442,8 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
       a.channel = 0;
       a.channelT = 0;
       syncDoors(m);
-      say(m, `${a.name} latched the ${openDoor.id} door.`);
+      say(m, `${a.name} latched the ${openDoor.id} door.`, a.id);
+      a.didLatch = true;
       m.taughtLatch = true;
       events.push({ type: "door", broken: false });
     }
@@ -1162,6 +1451,25 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
   }
   const shutDoor = nearestDoor(m, a, true);
   if (shutDoor) {
+    if (a.job === "bar") {
+      if (a.channel !== 6 || a.channelTarget !== shutDoor.id) {
+        a.channel = 6;
+        a.channelTarget = shutDoor.id;
+        a.channelT = 0;
+      }
+      a.channelT += dt;
+      if (a.channelT >= 1.55) {
+        shutDoor.latched = false;
+        shutDoor.hits = 0;
+        a.channel = 0;
+        a.channelT = 0;
+        syncDoors(m);
+        say(m, `${a.name} forced the ${shutDoor.id} latch.`, a.id);
+        events.push({ type: "door", broken: true });
+        if (m.ambush?.doorId === shutDoor.id) springAmbush(m, a, events);
+      }
+      return;
+    }
     if (shutDoor.rattle <= 0) {
       shutDoor.rattle = 0.52;
       events.push({ type: "door", broken: false });
@@ -1192,7 +1500,7 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
           mon.buffT = Math.max(mon.buffT, 5);
           mon.hearT = 2;
         }
-        say(m, `${a.name} kindled the ${ward.name}.`);
+        say(m, `${a.name} kindled the ${ward.name}.`, a.id);
         events.push({ type: "ward" });
         if (hearthsOpen(m) && allLivingLucid(m)) {
           say(m, "Every hearth burns. The Somnarch can be unmade.");
@@ -1217,7 +1525,7 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
 }
 
 function nearestTell(a: Actor): (typeof TELLS)[number] | null {
-  if (a.role !== "dreamer") return null;
+  if (a.role !== "dreamer" || a.job !== "ear") return null;
   const heard = a.heard ?? [];
   let best: (typeof TELLS)[number] | null = null;
   let bestD = LISTEN_R;
@@ -1355,10 +1663,15 @@ function tryDash(a: Actor): void {
 }
 
 function tryAbility(m: Match, a: Actor, events: SimEvent[]): void {
-  if (a.abilityCd > 0 || a.dead || a.downed || a.stun > 0) return;
+  if (a.dead || a.downed || a.stun > 0) return;
+  if (a.abilityCd > 0) {
+    if (!a.bot) {
+      const verb = a.role === "somnarch" ? "Sense" : a.lucid ? "Pulse" : "Veil";
+      say(m, `${verb} is cooling. ${Math.ceil(a.abilityCd)}s.`, a.id);
+    }
+    return;
+  }
   if (a.role === "somnarch") {
-    a.senseT = 4.5;
-    a.abilityCd = 16;
     let nearest: Actor | null = null;
     let best = 48;
     for (const o of m.actors) {
@@ -1369,8 +1682,14 @@ function tryAbility(m: Match, a: Actor, events: SimEvent[]): void {
         nearest = o;
       }
     }
-    if (nearest && best < 28) nearest.markT = 4;
-    say(m, nearest ? `The Somnarch marks ${nearest.name}.` : "The Somnarch searches the dream.");
+    if (!nearest || best >= 28) {
+      if (!a.bot) say(m, "No dreamer close enough to mark. Walk the lanes.", a.id);
+      return;
+    }
+    a.senseT = 4.5;
+    a.abilityCd = 16;
+    nearest.markT = 4;
+    say(m, `The Somnarch marks ${nearest.name}.`);
     return;
   }
   if (a.lucid) {
@@ -1388,18 +1707,25 @@ function tryAbility(m: Match, a: Actor, events: SimEvent[]): void {
     }
     return;
   }
-  if (a.nerve < 34) return;
+  if (a.nerve < 34) {
+    if (!a.bot) say(m, "Not enough nerve to veil.", a.id);
+    return;
+  }
   a.nerve -= 34;
   a.veilT = 3.5;
   a.hearT = 0;
   a.abilityCd = 13;
   events.push({ type: "veil" });
+  say(m, `${a.name} draws a veil. The butcher loses them unless he is close.`, a.id);
 }
 
 function tryKit(m: Match, a: Actor, events: SimEvent[]): void {
-  if (a.kitCd > 0 || a.dead || a.downed || a.stun > 0) return;
+  if (a.dead || a.downed || a.stun > 0) return;
   if (a.role === "somnarch") {
-    a.kitCd = 12;
+    if (a.kitCd > 0) {
+      if (!a.bot) say(m, `Stitch is cooling. ${Math.ceil(a.kitCd)}s.`, a.id);
+      return;
+    }
     a.swing = 1;
     let caught = false;
     for (const o of m.actors) {
@@ -1415,13 +1741,26 @@ function tryKit(m: Match, a: Actor, events: SimEvent[]): void {
       caught = true;
     }
     if (caught) {
+      a.kitCd = 12;
       events.push({ type: "stitch" });
-      say(m, "The Somnarch throws a stitch.");
+      say(m, "The Somnarch throws a stitch. It caught.");
+    } else if (!a.bot) {
+      say(m, "No dreamer in front of you. Face them, then R.", a.id);
     }
     return;
   }
-  if (!a.lucid) return;
-  if (a.tetherCd > 0) return;
+  if (!a.lucid) {
+    if (!a.bot) say(m, "Wake at the altar before R can tether.", a.id);
+    return;
+  }
+  if (a.tetherCd > 0) {
+    if (!a.bot) say(m, `Tether is cooling. ${Math.ceil(a.tetherCd)}s.`, a.id);
+    return;
+  }
+  if (!nearestSleeper(m, a)) {
+    if (!a.bot) say(m, "No sleeper close enough to tether.", a.id);
+    return;
+  }
   const before = a.tetherCd;
   tether(m, a, events);
   if (a.tetherCd !== before) a.kitCd = 0.35;
@@ -1459,13 +1798,16 @@ function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, event
   if (input.dashPulse) tryDash(a);
   if (input.usePulse) useItem(m, a, events);
   if (input.ablPulse) tryAbility(m, a, events);
-  if (input.kitPulse) tryKit(m, a, events);
+  if (input.kitPulse) {
+    if (a.role === "somnarch") a.yaw = input.camYaw;
+    tryKit(m, a, events);
+  }
   if (input.atk) {
     a.veilT = 0;
     strike(m, a, input.camYaw, events);
   }
-  tickInteract(m, a, input.interactHeld && Math.hypot(a.vx, a.vz) < 3.2, dt, events);
-  tryPickup(m, a, events);
+  tickInteract(m, a, input.interactHeld && Math.hypot(a.vx, a.vz) < WALK_E, dt, events);
+  tryPickup(m, a, events, input.interactHeld);
   input.usePulse = false;
   input.ablPulse = false;
   input.dashPulse = false;
@@ -1536,11 +1878,6 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
       tryDash(a);
       a.botTap = 1.2;
     }
-    if (d > 5 && d < 12 && a.snareCd <= 0 && m.snares.length < 2 && a.botTap <= 0) {
-      m.snares.push({ id: `snare-b-${Math.floor(m.time * 10)}`, x: a.x, z: a.z });
-      a.snareCd = 16;
-      a.botTap = 2.2;
-    }
   } else if (a.huntT > 0) {
     wx = a.huntX - a.x;
     wz = a.huntZ - a.z;
@@ -1570,7 +1907,22 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
       }
     }
   }
-  if (!snuffing && !forcing && (a.channel === 4 || a.channel === 6)) {
+  let ambushing = false;
+  if (!best && !snuffing && !forcing && !m.ambush && a.snareCd <= 0 && a.botTap <= 0) {
+    const spot = ambushSpot(m, a) ?? ((): ReturnType<typeof ambushSpot> => {
+      const lamp = nearestLamp(a, 14);
+      return lamp ? { id: "porch", kind: "porch", x: lamp[0], z: lamp[1], doorId: "" } : null;
+    })();
+    if (spot) {
+      wx = spot.x - a.x;
+      wz = spot.z - a.z;
+      if (Math.hypot(wx, wz) < (spot.kind === "gate" ? DOOR_R + 0.15 : 2.4)) {
+        tickInteract(m, a, true, dt, events);
+        ambushing = true;
+      }
+    }
+  }
+  if (!snuffing && !forcing && !ambushing && (a.channel === 4 || a.channel === 6 || a.channel === 11)) {
     a.channel = 0;
     a.channelT = 0;
   }
@@ -1580,6 +1932,10 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
 
 function botDreamer(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
   const mon = monsterOf(m);
+  if ((a.calmT ?? 0) > 0 && !(mon && !mon.dead && dist(a, mon) < 2.6)) {
+    locomotion(a, 0, 0, dt, false);
+    return;
+  }
   const md = mon && !mon.dead ? dist(a, mon) : 999;
   const los = mon ? md < 16 && !lineBlocked(a.x, a.z, mon.x, mon.z) : false;
   const hunted = !!mon && (mon.senseT > 0 || a.markT > 0 || a.hearT > 0);
@@ -1694,8 +2050,18 @@ function botDreamer(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
   if (a.hp < 52 && !danger) sip(m, a, ["bandage", "mend"], events);
   if (a.stamina < 30 && sprint) sip(m, a, ["adrenaline", "haste"], events);
   if (danger && md < 8 && a.veilT <= 0) sip(m, a, ["hush"], events);
-  if (danger && md < 6 && (a.guard ?? 0) <= 0) sip(m, a, ["ward"], events);
+  if (danger && md < 6 && (a.guard ?? 0) <= 0 && a.job === "tend") sip(m, a, ["ward"], events);
 
+  if (!danger && a.job === "rope" && !m.bellStruck && m.bellCd <= 0) {
+    const bx = m.bellX - a.x;
+    const bz = m.bellZ - a.z;
+    if (Math.hypot(bx, bz) < 36) {
+      wx = bx;
+      wz = bz;
+      sprint = Math.hypot(bx, bz) > 8;
+      if (Math.hypot(bx, bz) <= RING_R) interact = true;
+    }
+  }
   locomotion(a, wx, wz, dt, sprint);
   tickInteract(m, a, interact, dt, events);
   if (a.lucid && a.abilityCd <= 0 && danger && mon && (lineBlocked(a.x, a.z, mon.x, mon.z) || md > 14)) {
@@ -1798,6 +2164,7 @@ export function step(m: Match, inputs: Map<string, Input>, dt: number): SimEvent
   }
   if (m.phase === "play") {
     tickSnares(m);
+    tickAmbush(m, dt, events);
     separate(m);
   }
   return events;
@@ -1811,6 +2178,8 @@ export function objectiveFor(m: Match, id: string): string {
   const lit = m.wards.filter((w) => w.lit).length;
   const hearthLine = `Hearths ${lit}/${m.wards.length}.`;
   if (me.role === "somnarch") {
+    const close = livingDreamers(m).some((a) => dist(me, a) < 24);
+    if (close) return "A dreamer is close. Walk up. Face them and press R to stitch.";
     const left = livingDreamers(m).length;
     if (m.time < OPEN_TIME) return "They are still learning the streets.";
     return left > 0 ? `${left} still breathe. Snuff any hearth that catches.` : "The neighborhood is yours.";
@@ -1838,6 +2207,8 @@ export function promptFor(m: Match, id: string): string {
   if (me.channel === 7) return "Slipping through";
   if (me.channel === 8) return "Cranking";
   if (me.channel === 9) return "Listening";
+  if (me.channel === 10) return "Ringing";
+  if (me.channel === 11) return "Setting the ambush";
   const winding = monsterOf(m);
   if (me.role === "dreamer" && winding && winding.commitT > 0 && dist(me, winding) < 16) return "Dodge the cut";
   const hop = nearestShortcut(me);
@@ -1848,6 +2219,7 @@ export function promptFor(m: Match, id: string): string {
   }
   const car = nearestCar(m, me);
   if (car) return "Crank";
+  if (me.role === "dreamer" && nearBell(m, me)) return me.job === "rope" ? "Hold E to ring the bell" : "Hold E — a wrong pull still clangs";
   if (me.role === "dreamer" && nearestTell(me)) return "Hold to listen";
   if (me.role === "somnarch") {
     const down = m.actors.find((a) => a.downed && dist(me, a) < 2.4);
@@ -1857,13 +2229,15 @@ export function promptFor(m: Match, id: string): string {
     const litWard = nearestWard(m, me, true);
     if (litWard) return `Hold to snuff ${litWard.name}`;
     if (me.stalk >= 80) return "Stalk ready — the next cleave is heavy";
+    if (m.ambush) return "Ambush is set";
+    if (me.snareCd <= 0 && ambushSpot(m, me)) return "Hold E to set an ambush";
     if (me.kitCd <= 0 && m.actors.some((a) => a.role === "dreamer" && !a.dead && dist(me, a) < 12)) return "R stitch";
     return "";
   }
   const down = nearestDowned(m, me);
   if (down) return `Hold to revive ${down.name}`;
   const shut = nearestDoor(m, me, true);
-  if (shut) return "Latched";
+  if (shut) return me.job === "bar" ? "Hold E to force the latch" : "Latched — only the forcer opens it";
   const threat = monsterOf(m);
   const openDoor = nearestDoor(m, me, false);
   if (openDoor && threat && !threat.dead && dist(me, threat) < 16) return "Hold to latch the door";
@@ -1916,13 +2290,142 @@ export function checklistFor(m: Match, id: string): CheckRow[] {
     { label: "Find a porch light", done: me.sawLight },
     { label: `Whispers ${Math.min(me.heard?.length ?? 0, TELLS.length)}/${TELLS.length}`, done: (me.heard?.length ?? 0) >= TELLS.length },
     { label: "Learn a way out", done: me.usedReset },
-    { label: "Latch a door", done: m.taughtLatch },
+    { label: me.job ? `Work · ${jobLabel(me.job)}` : "Work dropped", done: false },
+    { label: "Latch a door", done: !!me.didLatch },
     { label: `Latch-keys ${Math.min(me.fragments, WAKE_NEED)}/${WAKE_NEED}`, done: me.lucid || me.fragments >= WAKE_NEED },
     { label: "Wake at the altar", done: me.lucid },
     { label: `Phone line ${Math.min(m.phones, 3)}/3`, done: m.phones >= 3 },
   ];
+  if (me.job === "rope") rows.push({ label: "Ring the bell", done: m.bellStruck });
   for (const w of m.wards) rows.push({ label: w.name, done: w.lit });
   return rows;
+}
+
+export type WorldMark = { x: number; z: number; kind: string };
+
+export function marksFor(m: Match, id: string): { guide: WorldMark | null; here: WorldMark | null } {
+  const me = m.actors.find((a) => a.id === id);
+  if (!me || me.dead || m.phase !== "play") return { guide: null, here: null };
+  return { guide: guideMark(m, me), here: hereMark(m, me) };
+}
+
+function hereMark(m: Match, a: Actor): WorldMark | null {
+  if (a.downed) return null;
+  if (a.role === "somnarch") {
+    const door = nearestDoor(m, a, true) ?? nearestDoor(m, a, false);
+    if (door) return { x: door.x, z: door.z, kind: "door" };
+    const ward = nearestWard(m, a, true);
+    if (ward) return { x: ward.x, z: ward.z, kind: "hearth" };
+    const lamp = nearestLamp(a, 2.5);
+    if (lamp && !m.ambush && a.snareCd <= 0) return { x: lamp[0], z: lamp[1], kind: "porch" };
+    return null;
+  }
+  let best: Pickup | null = null;
+  let bestD = GRAB_R;
+  for (const p of m.pickups) {
+    if (p.taken || (p.cool ?? 0) > 0) continue;
+    const useful = p.kind === "fragment" || p.kind === "phone" || isJob(p.kind) || isWeapon(p.kind);
+    if (!useful) continue;
+    if (p.kind === "fragment" && (a.lucid || a.fragments >= WAKE_NEED)) continue;
+    const d = dist(a, p);
+    if (d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  if (best) return { x: best.x, z: best.z, kind: String(best.kind) };
+  const tell = nearestTell(a);
+  if (tell) return { x: tell.x, z: tell.z, kind: "mote" };
+  if (nearBell(m, a)) return { x: m.bellX, z: m.bellZ, kind: "bell" };
+  const door = nearestDoor(m, a, true) ?? nearestDoor(m, a, false);
+  if (door) return { x: door.x, z: door.z, kind: "door" };
+  const ward = a.lucid ? nearestWard(m, a, false) : null;
+  if (ward) return { x: ward.x, z: ward.z, kind: "hearth" };
+  const hop = nearestShortcut(a);
+  if (hop) {
+    const mouth = hop.fromA ? { x: hop.sc.ax, z: hop.sc.az } : { x: hop.sc.bx, z: hop.sc.bz };
+    return { ...mouth, kind: hop.sc.kind };
+  }
+  return null;
+}
+
+function guideMark(m: Match, a: Actor): WorldMark | null {
+  if (a.downed) return null;
+  if (a.role === "somnarch") {
+    let best: Actor | null = null;
+    let bestD = 80;
+    for (const o of livingDreamers(m)) {
+      const d = dist(a, o);
+      if (d < bestD) {
+        bestD = d;
+        best = o;
+      }
+    }
+    return best ? { x: best.x, z: best.z, kind: "dreamer" } : null;
+  }
+  if (!a.lucid && a.fragments < WAKE_NEED) {
+    const key = nearestFragment(m, a);
+    if (key) return { x: key.x, z: key.z, kind: "fragment" };
+  }
+  if (!a.lucid && a.fragments >= WAKE_NEED) return { x: 0, z: 0, kind: "altar" };
+  if (a.job === "ear") {
+    const heard = a.heard ?? [];
+    let tell: (typeof TELLS)[number] | null = null;
+    let tellD = 1e9;
+    for (const t of TELLS) {
+      if (heard.includes(t.id)) continue;
+      const d = Math.hypot(a.x - t.x, a.z - t.z);
+      if (d < tellD) {
+        tellD = d;
+        tell = t;
+      }
+    }
+    if (tell) return { x: tell.x, z: tell.z, kind: "mote" };
+  }
+  if (a.lucid) {
+    const dark = m.wards.find((w) => !w.lit);
+    if (dark) return { x: dark.x, z: dark.z, kind: "hearth" };
+  }
+  if (a.job === "rope" && !m.bellStruck) return { x: m.bellX, z: m.bellZ, kind: "bell" };
+  return null;
+}
+
+export function failReason(m: Match, id: string, key: "e" | "q" | "r", sprinting: boolean): string {
+  const a = m.actors.find((actor) => actor.id === id);
+  if (!a || a.dead || a.downed || m.phase !== "play") return "";
+  if (key === "q" || key === "r") return "";
+  if (!sprinting && Math.hypot(a.vx, a.vz) < WALK_E && a.channel !== 0) return "";
+  if (sprinting || Math.hypot(a.vx, a.vz) >= WALK_E) return "Sprinting. Release Shift, then hold E.";
+  if (a.channel !== 0) return "";
+  if (a.role === "somnarch") {
+    if (m.ambush) return "An ambush is already set.";
+    if (a.snareCd > 0) return `Ambush is cooling. ${Math.ceil(a.snareCd)}s.`;
+    return "Nothing in reach. Stand at an open door or a porch lamp.";
+  }
+  if (!a.lucid && a.fragments < WAKE_NEED) {
+    let near = 1e9;
+    for (const p of m.pickups) {
+      if (p.taken || p.kind !== "fragment") continue;
+      near = Math.min(near, dist(a, p));
+    }
+    if (near <= GRAB_R) return "";
+    if (near < 12) return "A latch-key is ahead. Walk closer and hold E.";
+  }
+  if (a.job !== "ear") {
+    for (const tell of TELLS) {
+      if ((a.heard ?? []).includes(tell.id)) continue;
+      if (Math.hypot(a.x - tell.x, a.z - tell.z) < 6) return "Only the listener hears this mote.";
+    }
+  } else {
+    for (const tell of TELLS) {
+      if ((a.heard ?? []).includes(tell.id)) continue;
+      const d = Math.hypot(a.x - tell.x, a.z - tell.z);
+      if (d < 8 && d > LISTEN_R) return "A pale mote is ahead. Walk closer and hold E.";
+    }
+  }
+  const shut = m.doors.find((d) => d.latched && Math.hypot(a.x - d.x, a.z - d.z) < 4);
+  if (shut && a.job !== "bar") return "Only the forcer opens a latched door.";
+  return "Nothing in reach.";
 }
 
 /** Door under the interact prompt, if the padlock should sit on it. */
@@ -1947,6 +2450,8 @@ export const RULES = {
   LATCH_TIME,
   BREAK_TIME,
   LISTEN_TIME,
+  RING_TIME,
+  AMBUSH_WIND,
   HOP_TIME: 0.8,
   CRANK_TIME: 1.15,
   CELLAR_SLOW: 2.4,

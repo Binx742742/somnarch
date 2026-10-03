@@ -43,6 +43,9 @@ export type RenderView = {
   doors: Array<{ id: string; latched: boolean }>;
   focusDoor: string | null;
   snares: Array<{ id: string; x: number; z: number }>;
+  marks?: { guide: { x: number; z: number } | null; here: { x: number; z: number } | null };
+  bell?: { x: number; z: number; ring: number } | null;
+  ambush?: { kind: "gate" | "porch"; x: number; z: number } | null;
 };
 
 const COATS = [0x7a3a32, 0x3e4c56, 0x8a7d68, 0x3c3348];
@@ -52,6 +55,7 @@ const GradeShader = {
   uniforms: {
     tDiffuse: { value: null },
     uTime: { value: 0 },
+    uGamma: { value: 1.5 },
   },
   vertexShader: `
     varying vec2 vUv;
@@ -63,6 +67,7 @@ const GradeShader = {
   fragmentShader: `
     uniform sampler2D tDiffuse;
     uniform float uTime;
+    uniform float uGamma;
     varying vec2 vUv;
     void main() {
       vec2 c = vUv - 0.5;
@@ -74,16 +79,18 @@ const GradeShader = {
       vec3 col = vec3(cr, cg, cb);
       float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
       float shadow = 1.0 - smoothstep(0.02, 0.35, luma);
-      col = mix(col, col * vec3(0.42, 0.32, 0.38), shadow * 0.82);
+      col = mix(col, col * vec3(0.55, 0.48, 0.5), shadow * 0.45);
       float high = smoothstep(0.42, 1.15, luma);
       col += vec3(0.05, 0.028, 0.008) * high;
       float vig = smoothstep(0.58, 0.16, r2);
-      col *= mix(0.62, 1.0, vig);
+      col *= mix(0.78, 1.0, vig);
       float n = fract(sin(dot(vUv * vec2(210.0, 93.0) + uTime, vec2(12.9898, 78.233))) * 43758.5453);
       col += (n - 0.5) * 0.02;
       float mote = fract(sin(dot(vUv * vec2(40.0, 17.0) + uTime * 0.15, vec2(41.2, 19.7))) * 12543.1);
       col += vec3(0.045, 0.032, 0.018) * smoothstep(0.992, 1.0, mote);
-      gl_FragColor = vec4(max(col, 0.0), 1.0);
+      float g = max(uGamma, 0.45);
+      col = pow(max(col, 0.0), vec3(1.0 / g));
+      gl_FragColor = vec4(col, 1.0);
     }
   `,
 };
@@ -110,6 +117,12 @@ export class DreamRenderer {
   private readonly snareMeshes: THREE.Mesh[] = [];
   private readonly look = new THREE.Vector3();
   private readonly proj = new THREE.Vector3();
+  private readonly guide: THREE.Mesh;
+  private readonly here: THREE.Mesh;
+  private readonly bell: THREE.Group;
+  private gamma = 1.35;
+  private readonly baseExposure: number;
+  private readonly baseFog: number;
 
   constructor(canvas: HTMLCanvasElement) {
     const coarse = window.matchMedia("(pointer: coarse)").matches;
@@ -122,13 +135,15 @@ export class DreamRenderer {
     });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = this.high ? 0.94 : 1.05;
+    this.baseExposure = this.high ? 0.94 : 1.05;
+    renderer.toneMappingExposure = this.baseExposure;
     renderer.setClearColor(0x07060c, 1);
     renderer.shadowMap.enabled = this.high;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer = renderer;
     this.scene.background = new THREE.Color(0x07060c);
-    this.scene.fog = new THREE.FogExp2(0x141820, this.high ? 0.0078 : 0.0105);
+    this.baseFog = this.high ? 0.0072 : 0.0094;
+    this.scene.fog = new THREE.FogExp2(0x1a222c, this.baseFog);
 
     this.buildLights();
     this.suburb = buildSuburb(this.scene, renderer, this.high);
@@ -136,6 +151,28 @@ export class DreamRenderer {
     this.scene.add(this.actorRoot);
     this.scene.add(this.pickupRoot);
     this.scene.add(this.snareRoot);
+    this.guide = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.22, 6.5, 8),
+      new THREE.MeshBasicMaterial({ color: 0xe4d3b0, transparent: true, opacity: 0.55, depthWrite: false }),
+    );
+    this.here = new THREE.Mesh(
+      new THREE.TorusGeometry(0.7, 0.045, 6, 18),
+      new THREE.MeshBasicMaterial({ color: 0xffb46a }),
+    );
+    this.here.rotation.x = Math.PI / 2;
+    this.bell = new THREE.Group();
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.1, 2.2, 6),
+      new THREE.MeshStandardMaterial({ color: 0x3a342c, roughness: 0.7 }),
+    );
+    post.position.y = 1.1;
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.28, 10, 8),
+      new THREE.MeshStandardMaterial({ color: 0xffb46a, emissive: 0xffb46a, emissiveIntensity: 0.8, roughness: 0.35 }),
+    );
+    head.position.y = 2.3;
+    this.bell.add(post, head);
+    this.scene.add(this.guide, this.here, this.bell);
     this.buildShowcase();
 
     this.monsterLight = new THREE.PointLight(0xff3b2a, 0, 11, 2);
@@ -155,6 +192,7 @@ export class DreamRenderer {
       this.composer = null;
       this.grade = null;
     }
+    this.setGamma(1.5);
     this.resize();
   }
 
@@ -180,9 +218,13 @@ export class DreamRenderer {
     if (this.grade) this.grade.uniforms.uTime!.value = this.time;
     for (const hand of this.suburb.clockHands) hand.rotation.z += dt * (hand.userData.fast ? 1.15 : 0.22);
     this.suburb.altarLight.intensity = 18 + Math.sin(this.orbit * 2.4) * 3.5;
+    const porch = view.ambush?.kind === "porch" ? view.ambush : null;
     this.suburb.lampLights.forEach((light, i) => {
-      light.intensity = (this.high ? 28 : 14) * (0.88 + Math.sin(this.time * 1.7 + i * 1.3) * 0.1);
+      let intensity = (this.high ? 28 : 14) * (0.88 + Math.sin(this.time * 1.7 + i * 1.3) * 0.1);
+      if (porch && Math.hypot(light.position.x - porch.x, light.position.z - porch.z) < 3.2) intensity *= 0.08;
+      light.intensity = intensity;
     });
+    this.syncMarks(view);
     this.driftAsh(dt);
     this.followMoon(view);
     this.syncActors(dt, view);
@@ -220,6 +262,14 @@ export class DreamRenderer {
     for (const tex of this.suburb.textures) tex.dispose();
     this.suburb.environment?.dispose();
     this.ash.dispose();
+  }
+
+  setGamma(value: number): void {
+    this.gamma = Math.max(0.75, Math.min(1.7, value));
+    this.renderer.toneMappingExposure = this.baseExposure * (0.7 + this.gamma * 0.5);
+    const fog = this.scene.fog;
+    if (fog instanceof THREE.FogExp2) fog.density = this.baseFog / (0.8 + this.gamma * 0.28);
+    if (this.grade?.uniforms.uGamma) this.grade.uniforms.uGamma.value = this.gamma;
   }
 
   setDolls(visible: boolean): void {
@@ -472,6 +522,31 @@ export class DreamRenderer {
       door.rimMat.color.setHex(latched ? 0xc44536 : 0xf0e6d8);
       door.rimMat.opacity = latched ? 0.42 + 0.58 * (0.5 + 0.5 * Math.sin(this.time * 7)) : 0.92;
       door.rim.scale.setScalar(latched ? pulse : 1);
+    }
+  }
+
+  private syncMarks(view: RenderView): void {
+    const guide = view.mode === "play" ? view.marks?.guide : null;
+    const here = view.mode === "play" ? view.marks?.here : null;
+    this.guide.visible = !!guide;
+    if (guide) {
+      const y = groundY(guide.x, guide.z);
+      this.guide.position.set(guide.x, y + 3.2, guide.z);
+      const mat = this.guide.material;
+      if (mat instanceof THREE.MeshBasicMaterial) mat.opacity = 0.38 + Math.sin(this.time * 3) * 0.12;
+    }
+    this.here.visible = !!here;
+    if (here) {
+      this.here.position.set(here.x, groundY(here.x, here.z) + 0.08, here.z);
+      const pulse = 1 + Math.sin(this.time * 5) * 0.08;
+      this.here.scale.setScalar(pulse);
+    }
+    const bell = view.mode === "play" ? view.bell : null;
+    this.bell.visible = !!bell;
+    if (bell) {
+      this.bell.position.set(bell.x, groundY(bell.x, bell.z), bell.z);
+      const ring = bell.ring > 0 ? 1 + Math.sin(this.time * 18) * 0.08 : 1;
+      this.bell.scale.setScalar(ring);
     }
   }
 

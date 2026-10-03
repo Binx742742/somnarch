@@ -163,6 +163,9 @@ export const DREAMER_SPAWNS: Array<[number, number]> = [
 /** Far yard, so the open minutes are for learning the streets. */
 export const MONSTER_SPAWN: [number, number] = [78, 48];
 
+/** Lawn bell. Only the ringer finishes a pull; anyone else can fail it. */
+export const BELL = { x: -12, z: 18 };
+
 export type Shortcut = {
   id: string;
   kind: "fence" | "sewer" | "cellar";
