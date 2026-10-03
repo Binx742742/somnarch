@@ -127,7 +127,7 @@ export function DreamApp() {
           <p className="font-display text-xs tracking-widest text-moon">FIVE-SOUL HORROR</p>
           <h1 className="mt-2 font-display text-4xl text-fg md:text-5xl">SOMNARCH</h1>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-muted">
-            Four dreamers. One stitched butcher. The streets run the length of the neighborhood — listen at the pale motes, latch a porch when he is close, or be sewn into the dark.
+            Four dreamers. One stitched butcher. Lift a hearth iron, tailor's shears, or porch lamp from the yards. Draughts mend, hurry, hush, or ward. Listen at the pale motes.
           </p>
           {bootError ? <p className="mt-4 text-sm text-blood">{bootError}</p> : null}
 
@@ -221,7 +221,7 @@ export function DreamApp() {
           <p data-hud="cds" className="ability-ready text-xs leading-relaxed whitespace-pre-line text-moon" />
           {!coarse ? (
             <p className="mt-2 text-xs text-muted">
-              <kbd>WASD</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> <kbd>E</kbd> vault <kbd>F</kbd> <kbd>Q</kbd> <kbd>R</kbd> <kbd>LMB</kbd>
+              <kbd>WASD</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> <kbd>E</kbd> vault <kbd>F</kbd> draught <kbd>G</kbd> drop <kbd>Q</kbd> <kbd>R</kbd> <kbd>LMB</kbd>
             </p>
           ) : null}
         </div>
@@ -462,6 +462,7 @@ function TouchPad({ session }: { session: RefObject<DreamSession | null> }) {
         <TouchButton label="Pulse" on={(down) => session.current?.setTouchFlag("abl", down)} />
         <TouchButton label="Rite" on={(down) => session.current?.setTouchFlag("kit", down)} />
         <TouchButton label="Sprint" on={(down) => session.current?.setTouchFlag("sprint", down)} />
+        <TouchButton label="Drop" on={(down) => session.current?.setTouchFlag("drop", down)} />
       </div>
     </div>
   );

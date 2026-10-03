@@ -7,7 +7,24 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { makeFigure, makeLoot, type Figure } from "./figures";
 import { groundY, hitsBlock } from "./level";
 import { buildSuburb, type SuburbHandle } from "./suburb";
-import type { Actor, Pickup, Role } from "./sim";
+import type { Actor, Pickup, Role, WeaponKind } from "./sim";
+
+function syncHeld(fig: Figure, weapon: WeaponKind | null | undefined): void {
+  const prev = fig.group.getObjectByName("held-arm");
+  if (!weapon) {
+    if (prev) fig.group.remove(prev);
+    return;
+  }
+  if (prev && prev.userData.kind === weapon) return;
+  if (prev) fig.group.remove(prev);
+  const prop = makeLoot(weapon, true);
+  prop.name = "held-arm";
+  prop.userData.kind = weapon;
+  prop.scale.setScalar(0.8);
+  prop.position.set(-0.28, 1.05, 0.2);
+  prop.rotation.set(0.5, 0.2, 0.7);
+  fig.group.add(prop);
+}
 
 export type RenderView = {
   mode: "menu" | "play" | "end";
@@ -318,6 +335,7 @@ export class DreamRenderer {
       else fig.coat.emissive.setHex(fig.monster ? 0x120606 : actor.lucid ? 0x5a4630 : 0x14080c);
       if (fig.monster && actor.swing <= 0.65) fig.coat.emissiveIntensity = 0.08;
       if (!fig.monster) fig.eyes.color.setHex(actor.lucid ? 0xe4d3b0 : 0x1a1214);
+      syncHeld(fig, actor.role === "dreamer" ? actor.weapon : null);
       if (actor.role === "somnarch") {
         mon = actor;
         this.monsterLight.position.set(actor.x, 1.8, actor.z);
@@ -339,8 +357,10 @@ export class DreamRenderer {
     for (const p of view.pickups) {
       seen.add(p.id);
       let mesh = this.loots.get(p.id);
-      if (!mesh) {
+      if (!mesh || mesh.userData.kind !== p.kind) {
+        if (mesh) this.pickupRoot.remove(mesh);
         mesh = makeLoot(p.kind);
+        mesh.userData.kind = p.kind;
         this.pickupRoot.add(mesh);
         this.loots.set(p.id, mesh);
       }

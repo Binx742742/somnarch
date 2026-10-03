@@ -8,12 +8,15 @@ import {
   checklistFor,
   createMatch,
   dreamerVisibleToMonster,
+  isWeapon,
+  itemLabel,
   monsterOf,
   monsterVisibleTo,
   objectiveFor,
   promptDoor,
   promptFor,
   step,
+  weaponLabel,
   yawForDirection,
   type Actor,
   type HumanSpec,
@@ -102,6 +105,7 @@ const GAME_KEYS = new Set([
   "KeyQ",
   "KeyF",
   "KeyR",
+  "KeyG",
 ]);
 
 function makeId(): string {
@@ -122,6 +126,7 @@ function emptyInput(yaw = 0): Input {
     ablPulse: false,
     dashPulse: false,
     kitPulse: false,
+    dropPulse: false,
   };
 }
 
@@ -179,7 +184,7 @@ export class DreamSession {
   private lookDx = 0;
   private lookDy = 0;
   private mouse = false;
-  private prevDown = { use: false, abl: false, dash: false, kit: false };
+  private prevDown = { use: false, abl: false, dash: false, kit: false, drop: false };
   private localInput = emptyInput();
   private readonly touch = {
     ix: 0,
@@ -191,6 +196,7 @@ export class DreamSession {
     abl: false,
     dash: false,
     kit: false,
+    drop: false,
   };
   private reduced = false;
   private raf = 0;
@@ -311,7 +317,7 @@ export class DreamSession {
     this.lookDy += dy;
   }
 
-  setTouchFlag(key: "sprint" | "atk" | "interact" | "use" | "abl" | "dash" | "kit", down: boolean): void {
+  setTouchFlag(key: "sprint" | "atk" | "interact" | "use" | "abl" | "dash" | "kit" | "drop", down: boolean): void {
     this.touch[key] = down;
   }
 
@@ -434,6 +440,7 @@ export class DreamSession {
     const ablDown = this.down("KeyQ") || this.touch.abl || padAbl;
     const dashDown = this.down("Space") || this.touch.dash || padDash;
     const kitDown = this.down("KeyR") || this.touch.kit;
+    const dropDown = this.down("KeyG") || this.touch.drop;
     const input = this.localInput;
     input.ix = ix;
     input.iz = iz;
@@ -445,7 +452,8 @@ export class DreamSession {
     input.ablPulse = ablDown && !this.prevDown.abl;
     input.dashPulse = dashDown && !this.prevDown.dash;
     input.kitPulse = kitDown && !this.prevDown.kit;
-    this.prevDown = { use: useDown, abl: ablDown, dash: dashDown, kit: kitDown };
+    input.dropPulse = dropDown && !this.prevDown.drop;
+    this.prevDown = { use: useDown, abl: ablDown, dash: dashDown, kit: kitDown, drop: dropDown };
   }
 
   private inputMap(): Map<string, Input> {
@@ -656,7 +664,11 @@ export class DreamSession {
         }),
       );
     }
-    setText(this.hud.items, me.items.length ? me.items.map(itemLabel).join(" · ") : "Empty pockets");
+    const pocket = me.items.map(itemLabel);
+    if (me.role === "dreamer" && me.weapon) pocket.push(weaponLabel(me.weapon));
+    if (me.guard > 0) pocket.push("Ward up");
+    if (me.hasteT > 0) pocket.push("Running");
+    setText(this.hud.items, pocket.length ? pocket.join(" · ") : "Empty pockets");
     const ready: string[] = [];
     if (me.abilityCd <= 0.05) {
       if (me.role === "somnarch") ready.push("Q sense");
@@ -666,7 +678,7 @@ export class DreamSession {
     if (me.dashCd <= 0.05) ready.push("Space");
     if (me.role === "somnarch" && me.kitCd <= 0.05) ready.push("R stitch");
     if (me.role === "dreamer" && me.lucid && me.tetherCd <= 0.05) ready.push("R tether");
-    if (me.items.length > 0) ready.push("F");
+    if (me.items.length > 0) ready.push(`F ${itemLabel(me.items[0]!)}`);
     setText(this.hud.cds, ready.join("\n"));
     const mon = monsterOf(this.match);
     const showMon = !!mon && me.role === "dreamer" && (me.lucid || (me.senseT > 0 && !mon.dead));
@@ -742,9 +754,19 @@ export class DreamSession {
         ctx.fillRect(X(w.x) - 2, Y(w.z) - 2, 4, 4);
       }
       for (const p of this.match.pickups) {
-        if (p.taken || (p.kind !== "fragment" && p.kind !== "phone")) continue;
-        ctx.fillStyle = p.kind === "phone" ? "#c44536" : "#e4d3b0";
-        ctx.fillRect(X(p.x) - 1.5, Y(p.z) - 1.5, 3, 3);
+        if (p.taken) continue;
+        if (p.kind === "fragment" || p.kind === "phone") {
+          ctx.fillStyle = p.kind === "phone" ? "#c44536" : "#e4d3b0";
+          ctx.fillRect(X(p.x) - 1.5, Y(p.z) - 1.5, 3, 3);
+        } else if (isWeapon(p.kind)) {
+          ctx.fillStyle = "#d8c4a8";
+          ctx.fillRect(X(p.x) - 2, Y(p.z) - 2, 4, 4);
+        } else if (p.kind === "mend" || p.kind === "haste" || p.kind === "hush" || p.kind === "ward") {
+          ctx.fillStyle = "#8fd0c6";
+          ctx.beginPath();
+          ctx.arc(X(p.x), Y(p.z), 2.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
     for (const a of this.match.actors) {
@@ -823,6 +845,7 @@ export class DreamSession {
         this.localInput.ablPulse = false;
         this.localInput.dashPulse = false;
         this.localInput.kitPulse = false;
+        this.localInput.dropPulse = false;
       }
     }
     if (this.mode === "host" && this.match) {
@@ -1088,12 +1111,6 @@ function roleLabel(a: Actor): string {
   if (a.role === "somnarch") return "The Somnarch";
   if (a.lucid) return "Lucid";
   return "Dreamer";
-}
-
-function itemLabel(kind: string): string {
-  if (kind === "bandage") return "Bandage";
-  if (kind === "adrenaline") return "Adrenaline";
-  return "Alarm";
 }
 
 function linkLabel(state: string): string {
