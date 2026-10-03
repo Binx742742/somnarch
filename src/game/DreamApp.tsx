@@ -142,10 +142,10 @@ export function DreamApp() {
 
       {screen.kind === "menu" || screen.kind === "lobby" ? (
         <aside className="dossier absolute inset-y-0 left-0 z-10 w-full overflow-y-auto px-5 py-4 md:w-96 md:py-6">
-          <p className="font-display text-xs tracking-widest text-moon">FIVE-SOUL HORROR</p>
+          <p className="font-display text-xs tracking-widest text-moon">DEADLY HIDE AND SEEK</p>
           <h1 className="mt-2 font-display text-4xl text-fg md:text-5xl">SOMNARCH</h1>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-muted">
-            Four dreamers. One stitched butcher. One hears the motes, one forces latches, one carries the ward, one rings the bell. The butcher sets a gate or a dark porch about once a minute. Lift iron, shears, or a lamp. Hold E on a glowing mark.
+            Hide in the night neighborhood, or seek. A hider finds wire on the ground and crafts a snare from it. The seeker wears a street lamp, a parked car, or a piece of loot, then strikes when a hider comes close.
           </p>
           {bootError ? <p className="mt-4 text-sm text-blood">{bootError}</p> : null}
 
@@ -246,7 +246,7 @@ export function DreamApp() {
           <p data-hud="cds" className="ability-ready text-xs leading-relaxed whitespace-pre-line text-moon" />
           {!coarse ? (
             <p className="mt-2 text-xs text-muted">
-              <kbd>WASD</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> <kbd>E</kbd> hold <kbd>F</kbd> draught <kbd>G</kbd> drop <kbd>Q</kbd> <kbd>R</kbd> <kbd>LMB</kbd>
+              <kbd>WASD</kbd> <kbd>Shift</kbd> <kbd>C</kbd> hide <kbd>E</kbd> snare <kbd>Space</kbd>
             </p>
           ) : null}
           <label className="pointer-events-auto mt-2 flex items-center justify-end gap-2 text-xs text-muted">
@@ -280,7 +280,7 @@ export function DreamApp() {
           }}
         >
           <span className="max-w-md font-display text-xl leading-snug text-moon">
-            Click the street. WASD walks. The mouse looks. Hold E on a glowing mark.
+            Click the street. Find the wire and hold E to take it, then hold E to craft the snare. Seekers hold E beside a lamp, a car, or loot, then strike.
           </span>
         </button>
       ) : null}
@@ -349,10 +349,10 @@ function Menu(props: {
         />
       </label>
       <button type="button" className="bg-blood px-4 py-3 text-left text-fg" onClick={props.onDreamer}>
-        Start as Dreamer
+        Hide
       </button>
       <button type="button" className="border border-line px-4 py-3 text-left text-moon" onClick={props.onMonster}>
-        Play as the Somnarch
+        Seek
       </button>
       <button type="button" className="border border-line px-4 py-3 text-left text-fg" onClick={props.onHost}>
         Open a circle
@@ -377,10 +377,9 @@ function Menu(props: {
         </button>
       </form>
       <div className="mt-2 border-t border-line pt-4 text-sm leading-relaxed text-muted">
-        <p>Gather four latch-keys, then hold the rite at the clock altar. You become Lucid. Q spends nerve to veil before that.</p>
-        <p className="mt-2">Lucid souls kindle three hearths — chapel, mill, mausoleum — and press R to tether the others. The Somnarch can snuff a hearth and stitch you still.</p>
-        <p className="mt-2">It dies only when every living dreamer is Lucid and every hearth burns. Until then, chase it and it gets back up.</p>
-        <p className="mt-2">Circles are for friends on a direct link, not a ranked pit. Empty souls are filled by the dream.</p>
+        <p>Find the wire. Hold E until the screen says “The wire is taken.” Release, then hold E until it says “The snare is set.” The snare stays in the street.</p>
+        <p className="mt-2">Seek next. Stand by a lamp, a parked car, or loot and hold E. The screen names what you wear. Walk up to a hider and strike. The screen says “The hider is killed.” Until that strike, you look like the thing you wore.</p>
+        <p className="mt-2">Step on a crafted snare and the screen says “The snare takes the seeker.” It is not under you when you wake. A hider standing in the open can be found. One who is actually hidden is not given away.</p>
       </div>
       <button type="button" className="text-left text-sm text-moon" onClick={props.onMute}>
         {props.muted ? "Sound is sealed" : "Sound is open"}
@@ -422,7 +421,7 @@ function Lobby(props: {
   return (
     <div className="mt-6 flex flex-col gap-4">
       <p className="font-display text-3xl tracking-widest text-moon">{props.screen.code}</p>
-      <p className="text-sm text-muted">Share the code, or the page link. Five seats. One Somnarch, four dreamers. The dream fills empty chairs.</p>
+      <p className="text-sm text-muted">Share the code, or the page link. Five seats. One seeker, four hiders. The dream fills empty chairs.</p>
       <CopyLink code={props.screen.code} />
       {props.screen.note ? <p className="text-sm text-moon">{props.screen.note}</p> : null}
       <ul className="flex flex-col gap-2">
@@ -433,20 +432,20 @@ function Lobby(props: {
               <span className="text-muted"> · {member.state}</span>
             </span>
             <span className={member.want === "somnarch" ? "text-blood" : "text-moon"}>
-              {member.seated ? (member.want === "somnarch" ? "Somnarch" : "Dreamer") : "Outside"}
+              {member.seated ? (member.want === "somnarch" ? "Seeker" : "Hider") : "Outside"}
             </span>
           </li>
         ))}
       </ul>
       <div className="flex gap-2">
         <button type="button" className="flex-1 border border-line px-3 py-3 text-fg" onClick={() => props.onWant("dreamer")}>
-          Dreamer
+          Hide
         </button>
         <button type="button" className="flex-1 border border-blood px-3 py-3 text-blood" onClick={() => props.onWant("somnarch")}>
-          Somnarch
+          Seek
         </button>
       </div>
-      <p className="text-xs text-muted">You are set to {mine?.want === "somnarch" ? "the Somnarch" : "a dreamer"}.</p>
+      <p className="text-xs text-muted">You are set to {mine?.want === "somnarch" ? "seek" : "hide"}.</p>
       {props.screen.host ? (
         <button type="button" className="bg-blood px-4 py-3 text-fg" onClick={props.onBegin}>
           Begin the dream
@@ -538,7 +537,8 @@ function TouchPad({ session }: { session: RefObject<DreamSession | null> }) {
       <div className="pointer-events-auto absolute right-3 bottom-6 grid grid-cols-2 gap-2">
         <TouchButton label="Strike" on={(down) => session.current?.setTouchFlag("atk", down)} />
         <TouchButton label="Dodge" on={(down) => session.current?.setTouchFlag("dash", down)} />
-        <TouchButton label="Wake" on={(down) => session.current?.setTouchFlag("interact", down)} />
+        <TouchButton label="Hold" on={(down) => session.current?.setTouchFlag("interact", down)} />
+        <TouchButton label="Hide" on={(down) => session.current?.setTouchFlag("hide", down)} />
         <TouchButton label="Item" on={(down) => session.current?.setTouchFlag("use", down)} />
         <TouchButton label="Pulse" on={(down) => session.current?.setTouchFlag("abl", down)} />
         <TouchButton label="Rite" on={(down) => session.current?.setTouchFlag("kit", down)} />
