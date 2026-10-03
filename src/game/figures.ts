@@ -15,112 +15,192 @@ export type Figure = {
   seed: number;
 };
 
-const SKIN = new THREE.MeshStandardMaterial({
-  color: 0xb9a48c,
-  roughness: 0.82,
-  metalness: 0.02,
-});
+const SKIN_HEX = [0xc4ad94, 0xb99680, 0xd2bba4, 0xa88874];
+
+function noiseMap(seed: number, stitches: boolean): THREE.CanvasTexture | null {
+  if (typeof document === "undefined") return null;
+  const c = document.createElement("canvas");
+  c.width = 128;
+  c.height = 128;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 700; i++) {
+    const x = Math.floor(Math.abs(Math.sin(seed * 12.3 + i * 1.7)) * 128);
+    const y = Math.floor(Math.abs(Math.sin(seed * 4.1 + i * 2.3)) * 128);
+    const v = 150 + ((i * 17) % 80);
+    ctx.fillStyle = `rgba(${v},${v},${v},0.55)`;
+    ctx.fillRect(x, y, 2, 2);
+  }
+  if (stitches) {
+    ctx.strokeStyle = "#f2e6d4";
+    ctx.lineWidth = 2;
+    for (let y = 18; y < 120; y += 22) {
+      ctx.beginPath();
+      for (let x = 8; x < 120; x += 8) {
+        const yy = y + (x % 16 === 0 ? -3 : 3);
+        if (x === 8) ctx.moveTo(x, yy);
+        else ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+    }
+  } else {
+    ctx.strokeStyle = "rgba(40,30,24,0.35)";
+    ctx.lineWidth = 1;
+    for (let y = 0; y < 128; y += 6) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(128, y + 1);
+      ctx.stroke();
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 export function makeFigure(coatHex: number, monster: boolean, variant = 0): Figure {
   const group = new THREE.Group();
+  const clothMap = noiseMap(variant + 2.2, false);
+  const fleshMap = noiseMap(variant + (monster ? 9.1 : 1.4), monster);
   const coat = new THREE.MeshStandardMaterial({
     color: coatHex,
-    roughness: monster ? 0.78 : 0.72,
-    metalness: 0.06,
-    emissive: monster ? 0x2a0908 : 0x12080c,
-    emissiveIntensity: monster ? 0.45 : 0.14,
+    map: clothMap,
+    roughness: monster ? 0.86 : 0.78,
+    metalness: 0.02,
+    emissive: monster ? 0x140606 : 0x12080c,
+    emissiveIntensity: monster ? 0.08 : 0.1,
   });
-  const skin = monster
-    ? new THREE.MeshStandardMaterial({
-        color: 0x4a2824,
-        roughness: 0.55,
-        metalness: 0.04,
-        emissive: 0x2a0a08,
-        emissiveIntensity: 0.35,
-      })
-    : SKIN;
+  const skin = new THREE.MeshStandardMaterial({
+    color: monster ? 0x5c342e : SKIN_HEX[variant % SKIN_HEX.length],
+    map: fleshMap,
+    roughness: monster ? 0.62 : 0.58,
+    metalness: 0.02,
+    emissive: monster ? 0x1a0808 : 0x000000,
+    emissiveIntensity: monster ? 0.12 : 0,
+  });
   const dark = new THREE.MeshStandardMaterial({
-    color: monster ? 0x100c0c : 0x1a1412,
-    roughness: 0.8,
-    metalness: 0.08,
+    color: monster ? 0x14100e : 0x1c1614,
+    roughness: 0.84,
+    metalness: 0.04,
   });
   const eyes = new THREE.MeshBasicMaterial({ color: monster ? 0xffb25a : 0x1a1214 });
+  const stitchMat = new THREE.MeshStandardMaterial({
+    color: 0xe4d4bc,
+    roughness: 0.45,
+    metalness: 0.08,
+    emissive: 0x6a4030,
+    emissiveIntensity: 0.35,
+  });
 
   const torso = new THREE.Group();
-  torso.position.y = monster ? 1.02 : 0.92;
-  if (monster) torso.rotation.x = 0.32;
+  torso.position.y = monster ? 1.08 : 0.96;
+  if (monster) torso.rotation.x = 0.34;
   group.add(torso);
 
-  const bodyH = monster ? 1.15 : 0.78;
-  const body = new THREE.Mesh(
-    new THREE.CylinderGeometry(monster ? 0.34 : 0.24, monster ? 0.52 : 0.32, bodyH, monster ? 7 : 7),
-    coat,
-  );
-  body.position.y = monster ? 0.42 : 0.28;
-  torso.add(body);
-
-  const yoke = new THREE.Mesh(new THREE.BoxGeometry(monster ? 0.86 : 0.58, 0.14, monster ? 0.38 : 0.3), coat);
-  yoke.position.y = monster ? 0.92 : 0.62;
-  torso.add(yoke);
-
   if (!monster) {
-    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.42, 0.08), coat);
-    tail.position.set(0, -0.05, -0.2);
-    torso.add(tail);
-    const scarf = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.035, 6, 10), dark);
-    scarf.position.y = 0.78;
-    scarf.rotation.x = Math.PI / 2;
-    torso.add(scarf);
+    const pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.16, 0.2), coat);
+    pelvis.position.y = 0.02;
+    torso.add(pelvis);
+    const ribs = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.36, 0.2), coat);
+    ribs.position.y = 0.28;
+    torso.add(ribs);
+    const chest = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.18, 0.22), coat);
+    chest.position.y = 0.52;
+    torso.add(chest);
+    const skirt = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.34, 0.22), coat);
+    skirt.position.set(0, -0.1, -0.02);
+    torso.add(skirt);
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, 0.1, 8), skin);
+    neck.position.y = 0.66;
+    torso.add(neck);
   } else {
+    const pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.2, 0.26), coat);
+    pelvis.position.y = 0.02;
+    torso.add(pelvis);
+    const gut = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.42, 0.3), coat);
+    gut.position.set(0, 0.28, 0.04);
+    torso.add(gut);
+    const chest = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.28, 0.34), coat);
+    chest.position.set(0, 0.62, 0.06);
+    torso.add(chest);
+    const yoke = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.12, 0.36), coat);
+    yoke.position.set(0, 0.78, 0.04);
+    torso.add(yoke);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, 0.08), coat);
+    tail.position.set(0, -0.16, -0.16);
+    torso.add(tail);
     const apron = new THREE.MeshStandardMaterial({
       color: 0x6a5e52,
-      roughness: 0.86,
+      roughness: 0.9,
       metalness: 0.02,
-      emissive: 0x4a100c,
-      emissiveIntensity: 0.4,
+      emissive: 0x2a0c0a,
+      emissiveIntensity: 0.18,
     });
-    const bib = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.95, 0.06), apron);
-    bib.position.set(0, 0.42, 0.34);
+    const bib = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.78, 0.045), apron);
+    bib.position.set(0, 0.36, 0.22);
     torso.add(bib);
     const stain = new THREE.Mesh(
-      new THREE.BoxGeometry(0.22, 0.28, 0.02),
+      new THREE.BoxGeometry(0.16, 0.22, 0.02),
       new THREE.MeshStandardMaterial({
         color: 0x3a0c0a,
-        emissive: 0x6a140e,
-        emissiveIntensity: 1.1,
-        roughness: 0.5,
+        emissive: 0x5a120e,
+        emissiveIntensity: 0.7,
+        roughness: 0.55,
       }),
     );
-    stain.position.set(0.06, 0.18, 0.38);
+    stain.position.set(0.06, 0.22, 0.25);
     torso.add(stain);
-    const stitchMat = new THREE.MeshBasicMaterial({ color: 0xd8c4a8 });
-    for (const y of [0.2, 0.48, 0.74]) {
-      const stitch = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.015, 0.02), stitchMat);
-      stitch.position.set(0, y, 0.28);
+    for (const y of [0.18, 0.4, 0.62]) {
+      const stitch = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.012, 0.016), stitchMat);
+      stitch.position.set(0, y, 0.2);
       torso.add(stitch);
     }
   }
 
-  const headY = monster ? 1.18 : 0.86;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(monster ? 0.2 : 0.15, 12, 10), skin);
-  if (monster) head.scale.set(0.86, 1.25, 0.95);
-  head.position.y = headY;
+  const headY = monster ? 1.02 : 0.84;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(monster ? 0.16 : 0.125, 14, 12), skin);
+  head.scale.set(monster ? 0.82 : 0.92, monster ? 1.28 : 1.08, monster ? 0.9 : 0.96);
+  head.position.set(0, headY, monster ? 0.02 : 0.01);
   torso.add(head);
+  const jaw = new THREE.Mesh(new THREE.BoxGeometry(monster ? 0.12 : 0.1, monster ? 0.07 : 0.05, monster ? 0.1 : 0.08), skin);
+  jaw.position.set(0, headY - 0.1, monster ? 0.07 : 0.07);
+  torso.add(jaw);
+  if (monster) {
+    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.06), skin);
+    brow.position.set(0, headY + 0.06, 0.1);
+    torso.add(brow);
+    for (const y of [headY - 0.02, headY + 0.08]) {
+      const scar = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.01, 0.012), stitchMat);
+      scar.position.set(0, y, 0.13);
+      torso.add(scar);
+    }
+  }
 
-  const hood = new THREE.Mesh(new THREE.SphereGeometry(monster ? 0.28 : 0.2, 10, 8), dark);
-  hood.scale.set(1.05, 1.18, 1.2);
-  hood.position.set(0, headY + 0.03, -0.07);
+  const hood = new THREE.Mesh(new THREE.SphereGeometry(monster ? 0.22 : 0.16, 10, 8), dark);
+  hood.scale.set(1.15, 1.05, 0.72);
+  hood.position.set(0, headY + 0.04, monster ? -0.1 : -0.1);
   torso.add(hood);
+  const cowl = new THREE.Mesh(new THREE.TorusGeometry(monster ? 0.14 : 0.11, 0.035, 6, 10), dark);
+  cowl.position.set(0, headY - 0.02, 0.02);
+  cowl.rotation.x = Math.PI / 2;
+  torso.add(cowl);
 
-  const eyeY = headY + (monster ? 0.04 : 0.02);
-  const eyeZ = monster ? 0.16 : 0.12;
+  const eyeY = headY + (monster ? 0.03 : 0.02);
+  const eyeZ = monster ? 0.13 : 0.11;
   for (const s of [-1, 1]) {
-    const e = new THREE.Mesh(
-      new THREE.SphereGeometry(monster ? 0.045 : 0.028, 8, 6),
-      eyes,
+    const socket = new THREE.Mesh(
+      new THREE.SphereGeometry(monster ? 0.028 : 0.02, 8, 6),
+      dark,
     );
-    e.scale.set(monster ? 1.35 : 1, monster ? 0.38 : 1, 0.7);
-    e.position.set(s * (monster ? 0.075 : 0.055), eyeY, eyeZ);
+    socket.position.set(s * (monster ? 0.055 : 0.042), eyeY, eyeZ - 0.01);
+    torso.add(socket);
+    const e = new THREE.Mesh(new THREE.SphereGeometry(monster ? 0.02 : 0.014, 8, 6), eyes);
+    e.scale.set(monster ? 1.5 : 1.1, monster ? 0.45 : 0.7, 0.6);
+    e.position.set(s * (monster ? 0.055 : 0.042), eyeY, eyeZ);
     torso.add(e);
   }
 
@@ -128,79 +208,86 @@ export function makeFigure(coatHex: number, monster: boolean, variant = 0): Figu
     const crown = new THREE.MeshStandardMaterial({
       color: 0xd9cbb8,
       emissive: 0xff3a28,
-      emissiveIntensity: 1.6,
-      metalness: 0.45,
-      roughness: 0.28,
+      emissiveIntensity: 1.4,
+      metalness: 0.55,
+      roughness: 0.32,
     });
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
-      const needle = new THREE.Mesh(new THREE.ConeGeometry(0.028, 0.42, 5), crown);
-      needle.position.set(Math.cos(a) * 0.12, headY + 0.28, Math.sin(a) * 0.1 - 0.02);
-      needle.rotation.z = Math.cos(a) * 0.35;
-      needle.rotation.x = 0.2;
+      const needle = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.36, 5), crown);
+      needle.position.set(Math.cos(a) * 0.1, headY + 0.24, Math.sin(a) * 0.06 - 0.04);
+      needle.rotation.z = Math.cos(a) * 0.28;
+      needle.rotation.x = 0.15;
       torso.add(needle);
     }
   }
 
-  const armLen = monster ? 0.95 : 0.62;
-  const armR = pivotArm(torso, monster ? 0.48 : 0.32, monster ? 0.78 : 0.52, -1, armLen, skin, monster);
-  const armL = pivotArm(torso, monster ? 0.48 : 0.32, monster ? 0.78 : 0.52, 1, armLen, skin, false);
+  const armLen = monster ? 1.05 : 0.68;
+  const shoulderY = monster ? 0.74 : 0.56;
+  const shoulderX = monster ? 0.4 : 0.24;
+  const right = pivotArm(torso, shoulderX, shoulderY, -1, armLen, monster ? skin : coat, skin, monster);
+  const left = pivotArm(torso, shoulderX, shoulderY, 1, armLen, monster ? skin : coat, skin, false);
+  const armR = right.pivot;
+  const armL = left.pivot;
   if (monster) {
     const steel = new THREE.MeshStandardMaterial({
-      color: 0xd5d0c6,
-      metalness: 0.82,
-      roughness: 0.22,
-      emissive: 0x5a1610,
-      emissiveIntensity: 0.55,
+      color: 0xc8c2b6,
+      metalness: 0.78,
+      roughness: 0.28,
+      emissive: 0x3a100e,
+      emissiveIntensity: 0.25,
     });
-    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.72, 6), dark);
-    handle.position.set(0.02, -armLen - 0.16, 0.04);
-    armR.add(handle);
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.62, 0.04), steel);
-    blade.position.set(0.16, -armLen - 0.52, 0.08);
-    armR.add(blade);
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.038, 0.42, 6), dark);
+    handle.position.set(0.02, -0.16, 0.02);
+    right.hand.add(handle);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.46, 0.028), steel);
+    blade.position.set(0.1, -0.42, 0.03);
+    right.hand.add(blade);
     const edge = new THREE.Mesh(
-      new THREE.BoxGeometry(0.025, 0.56, 0.012),
+      new THREE.BoxGeometry(0.018, 0.42, 0.01),
       new THREE.MeshBasicMaterial({ color: 0xffe1c8 }),
     );
-    edge.position.set(0.4, -armLen - 0.52, 0.1);
-    armR.add(edge);
+    edge.position.set(0.18, -0.42, 0.04);
+    right.hand.add(edge);
     const thread = new THREE.MeshStandardMaterial({
       color: 0xe8dcc8,
       emissive: 0xff4a32,
-      emissiveIntensity: 2.2,
-      metalness: 0.4,
-      roughness: 0.25,
+      emissiveIntensity: 1.6,
+      metalness: 0.35,
+      roughness: 0.3,
     });
     for (let i = 0; i < 4; i++) {
-      const n = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.36, 5), thread);
+      const n = new THREE.Mesh(new THREE.ConeGeometry(0.016, 0.22, 5), thread);
       n.rotation.x = Math.PI;
-      n.position.set((i - 1.5) * 0.05, -armLen + 0.05, 0.08);
-      armL.add(n);
+      n.position.set((i - 1.5) * 0.04, 0.02, 0.04);
+      left.hand.add(n);
     }
   } else if (variant % 4 === 0) {
     const lantern = new THREE.Mesh(
-      new THREE.BoxGeometry(0.12, 0.16, 0.12),
+      new THREE.BoxGeometry(0.1, 0.14, 0.1),
       new THREE.MeshStandardMaterial({
         color: 0x2a2018,
         emissive: 0xffb060,
-        emissiveIntensity: 2.4,
+        emissiveIntensity: 2.2,
         roughness: 0.4,
       }),
     );
-    lantern.position.set(0, -armLen - 0.02, 0.06);
-    armL.add(lantern);
+    lantern.position.set(0, -0.02, 0.04);
+    left.hand.add(lantern);
   } else if (variant % 4 === 1) {
-    const satchel = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.26, 0.1), dark);
-    satchel.position.set(-0.05, 0.15, -0.22);
+    const satchel = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.24, 0.08), dark);
+    satchel.position.set(-0.02, 0.12, -0.16);
     torso.add(satchel);
   } else if (variant % 4 === 3) {
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.08, 8), dark);
-    cap.position.y = headY + 0.16;
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.14, 0.06, 10), dark);
+    cap.position.y = headY + 0.14;
     torso.add(cap);
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.02, 10), dark);
+    brim.position.set(0, headY + 0.1, 0.04);
+    torso.add(brim);
   }
 
-  const hip = monster ? 1.02 : 0.9;
+  const hip = monster ? 1.05 : 0.94;
   const legL = pivotLeg(group, -1, hip, coat, dark, monster);
   const legR = pivotLeg(group, 1, hip, coat, dark, monster);
 
@@ -252,21 +339,39 @@ function pivotArm(
   y: number,
   side: number,
   length: number,
+  sleeve: THREE.Material,
   skin: THREE.Material,
   monster: boolean,
-): THREE.Group {
+): { pivot: THREE.Group; hand: THREE.Group } {
   const pivot = new THREE.Group();
-  pivot.position.set(side * x, y, monster ? 0.12 : 0.02);
-  pivot.rotation.z = side * 0.18;
-  pivot.rotation.x = -0.2;
-  const arm = new THREE.Mesh(new THREE.CylinderGeometry(monster ? 0.07 : 0.055, monster ? 0.08 : 0.06, length, 6), skin);
-  arm.position.y = -length * 0.5;
-  pivot.add(arm);
-  const hand = new THREE.Mesh(new THREE.SphereGeometry(monster ? 0.07 : 0.05, 8, 6), skin);
-  hand.position.y = -length;
-  pivot.add(hand);
+  pivot.position.set(side * x, y, monster ? 0.06 : 0);
+  pivot.rotation.z = side * (monster ? 0.08 : 0.14);
+  pivot.rotation.x = -0.12;
+  const upper = length * 0.48;
+  const fore = length * 0.52;
+  const upperMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(monster ? 0.075 : 0.055, monster ? 0.08 : 0.05, upper, 7),
+    sleeve,
+  );
+  upperMesh.position.y = -upper * 0.5;
+  pivot.add(upperMesh);
+  const elbow = new THREE.Group();
+  elbow.position.y = -upper;
+  elbow.rotation.x = monster ? 0.1 : 0.28;
+  const foreMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(monster ? 0.055 : 0.04, monster ? 0.06 : 0.045, fore, 7),
+    skin,
+  );
+  foreMesh.position.y = -fore * 0.5;
+  elbow.add(foreMesh);
+  const hand = new THREE.Group();
+  hand.position.y = -fore;
+  const palm = new THREE.Mesh(new THREE.SphereGeometry(monster ? 0.055 : 0.04, 8, 6), skin);
+  hand.add(palm);
+  elbow.add(hand);
+  pivot.add(elbow);
   torso.add(pivot);
-  return pivot;
+  return { pivot, hand };
 }
 
 function pivotLeg(
@@ -278,14 +383,29 @@ function pivotLeg(
   monster: boolean,
 ): THREE.Group {
   const pivot = new THREE.Group();
-  pivot.position.set(side * (monster ? 0.16 : 0.12), hip, 0);
-  const len = monster ? 0.92 : 0.78;
-  const leg = new THREE.Mesh(new THREE.CylinderGeometry(monster ? 0.1 : 0.08, monster ? 0.11 : 0.09, len - 0.12, 6), coat);
-  leg.position.y = -(len - 0.12) * 0.5;
-  pivot.add(leg);
-  const boot = new THREE.Mesh(new THREE.BoxGeometry(monster ? 0.16 : 0.13, 0.12, monster ? 0.28 : 0.22), bootMat);
-  boot.position.set(0, -len + 0.06, 0.04);
-  pivot.add(boot);
+  pivot.position.set(side * (monster ? 0.16 : 0.1), hip, 0);
+  const len = monster ? 0.98 : 0.86;
+  const thigh = len * 0.48;
+  const shin = len * 0.52;
+  const thighMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(monster ? 0.11 : 0.08, monster ? 0.09 : 0.065, thigh, 7),
+    coat,
+  );
+  thighMesh.position.y = -thigh * 0.5;
+  pivot.add(thighMesh);
+  const knee = new THREE.Group();
+  knee.position.y = -thigh;
+  knee.rotation.x = monster ? 0.06 : 0.1;
+  const shinMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(monster ? 0.07 : 0.055, monster ? 0.08 : 0.06, shin - 0.08, 7),
+    coat,
+  );
+  shinMesh.position.y = -(shin - 0.08) * 0.5;
+  knee.add(shinMesh);
+  const boot = new THREE.Mesh(new THREE.BoxGeometry(monster ? 0.14 : 0.11, 0.1, monster ? 0.26 : 0.22), bootMat);
+  boot.position.set(0, -shin + 0.05, 0.04);
+  knee.add(boot);
+  pivot.add(knee);
   group.add(pivot);
   return pivot;
 }

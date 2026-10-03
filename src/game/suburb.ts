@@ -53,6 +53,18 @@ const STYLES: Record<string, Style> = {
   orchard: { wall: "siding", tint: 0xd8c4a6, roof: "eave", porch: true, special: "house", rise: 1.5 },
   twin: { wall: "siding", tint: 0xead8c4, roof: "front", porch: true, special: "house", rise: 2.1 },
   pump: { wall: "brick", tint: 0x6e564c, roof: "eave", porch: false, special: "house", rise: 0.7 },
+  clinic: { wall: "siding", tint: 0xd8c8b4, roof: "eave", porch: true, special: "house", rise: 1.35 },
+  bakery: { wall: "brick", tint: 0xc4a090, roof: "eave", porch: false, special: "house", rise: 1.15 },
+  parish: { wall: "stone", tint: 0xc8c2ba, roof: "front", porch: false, special: "house", rise: 2.45 },
+  foundry: { wall: "brick", tint: 0x4a403c, roof: "eave", porch: false, special: "house", rise: 0.85 },
+  rowhouse: { wall: "siding", tint: 0xe6d4c0, roof: "eave", porch: true, special: "house", rise: 2.15 },
+  gatehouse: { wall: "brick", tint: 0x6a5048, roof: "front", porch: true, special: "house", rise: 1.45 },
+  elm: { wall: "siding", tint: 0xd4c4a8, roof: "front", porch: true, special: "house", rise: 1.8 },
+  cedar: { wall: "siding", tint: 0xc8b498, roof: "eave", porch: true, special: "house", rise: 1.7 },
+  annex: { wall: "brick", tint: 0x8a685c, roof: "eave", porch: false, special: "house", rise: 1.55 },
+  pool: { wall: "siding", tint: 0xb7c4c8, roof: "eave", porch: false, special: "house", rise: 0.55 },
+  corner: { wall: "brick", tint: 0x7a5348, roof: "front", porch: true, special: "house", rise: 2.05 },
+  wicket: { wall: "siding", tint: 0xd8c8b0, roof: "eave", porch: true, special: "house", rise: 1.25 },
 };
 
 const WHITE = new THREE.Color(0xffffff);
@@ -120,10 +132,12 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
       attribute vec3 color;
       varying vec3 vColor;
       varying vec3 vWorld;
+      varying vec3 vNormal;
       void main() {
         vec4 w = modelMatrix * vec4(position, 1.0);
         vWorld = w.xyz;
         vColor = color;
+        vNormal = normalize(mat3(modelMatrix) * normal);
         gl_Position = projectionMatrix * viewMatrix * w;
       }
     `,
@@ -131,6 +145,7 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
       uniform float uTime;
       varying vec3 vColor;
       varying vec3 vWorld;
+      varying vec3 vNormal;
       void main() {
         float phase = fract(sin(dot(floor(vWorld * vec3(2.7, 1.3, 2.7)), vec3(127.1, 67.3, 311.7))) * 43758.5453);
         float pulse = 0.78 + 0.22 * sin(uTime * (1.1 + phase * 2.2) + phase * 6.2831);
@@ -140,8 +155,12 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
         float warm = smoothstep(0.15, 0.85, vColor.r / (vColor.b + 0.05));
         vec3 amber = vec3(vColor.r * 1.28, vColor.g * 0.7, vColor.b * 0.28);
         vec3 col = mix(vColor, amber, warm) * lit;
+        vec3 n = normalize(vNormal);
+        vec3 viewDir = normalize(cameraPosition - vWorld);
+        float fres = pow(1.0 - clamp(abs(dot(n, viewDir)), 0.0, 1.0), 2.4);
+        col = mix(col, vec3(0.42, 0.52, 0.58), fres * 0.62);
         float dist = length(vWorld - cameraPosition);
-        float fogF = 1.0 - exp(-dist * 0.012);
+        float fogF = 1.0 - exp(-dist * 0.008);
         col = mix(col, vec3(0.01, 0.006, 0.008), fogF);
         gl_FragColor = vec4(col, 1.0);
       }
@@ -166,7 +185,7 @@ export function buildSuburb(scene: THREE.Scene, renderer: THREE.WebGLRenderer, h
   scene.add(altarLight);
 
   const lampLights: THREE.PointLight[] = [];
-  const lampIdx = high ? [0, 1, 2, 11, 12, 13] : [0, 1, 2];
+  const lampIdx = high ? [0, 1, 2, 11, 12, 13, 16, 17] : [0, 1, 2];
   for (const i of lampIdx) {
     const spot = LAMPS[i];
     if (!spot) continue;
@@ -230,8 +249,8 @@ function createMaterials(tex: SuburbTextures): Record<string, THREE.MeshStandard
   const leaf = std(null, 0.96, 0, THREE.FrontSide, false);
   leaf.color.set(0xffffff);
   return {
-    siding: std(tex.siding, 0.84, 0.02),
-    brick: std(tex.brick, 0.92, 0.02),
+    siding: std(tex.siding, 0.74, 0.03),
+    brick: std(tex.brick, 0.86, 0.03),
     stone: std(tex.stone, 0.8, 0.04),
     shingle: std(tex.shingle, 0.9, 0.06, THREE.DoubleSide),
     metal: std(tex.metal, 0.42, 0.62),
@@ -377,7 +396,7 @@ function buildBlock(
   const face = orient(block);
   if (block.interior) addDoorBulb(windows, face, block);
   const tint = new THREE.Color(style.tint);
-  if (style.wall === "siding") tint.multiplyScalar(0.38);
+  if (style.wall === "siding") tint.multiplyScalar(0.52);
   const wall = mats[style.wall]!;
   const h = block.h;
   if (block.kind === "tower") {
@@ -1135,6 +1154,7 @@ function buildTrees(scene: THREE.Scene, mats: Record<string, THREE.MeshStandardM
     { count: high ? 16 : 10, r: 33.4 },
     { count: high ? 18 : 11, r: 56 },
     { count: high ? 14 : 8, r: 68 },
+    { count: high ? 12 : 7, r: 96 },
   ];
   for (const ring of rings) {
     for (let i = 0; i < ring.count; i++) {

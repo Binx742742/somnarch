@@ -47,13 +47,19 @@ export function createSuburbTextures(): SuburbTextures {
     ctx.fillStyle = "#c4a07a";
     ctx.fillRect(0, 0, s, s);
     for (let y = 0; y < s; y += 22) {
-      const shade = 168 + ((y / 22) % 2) * 22;
-      ctx.fillStyle = `rgb(${shade + 28},${shade},${shade - 36})`;
+      const row = y / 22;
+      const shade = 150 + (row % 2) * 18 + (row % 5) * 6;
+      ctx.fillStyle = `rgb(${shade + 34},${shade + 4},${shade - 32})`;
       ctx.fillRect(0, y, s, 19);
-      ctx.fillStyle = "#5c4636";
+      ctx.fillStyle = "#4e3a2c";
       ctx.fillRect(0, y + 19, s, 3);
+      for (let x = 8 + (row % 3) * 14; x < s; x += 48) {
+        ctx.fillStyle = "rgba(40,28,20,0.45)";
+        ctx.fillRect(x, y + 8, 2, 2);
+        ctx.fillRect(x + 22, y + 14, 2, 2);
+      }
     }
-    speck(ctx, s, 16);
+    speck(ctx, s, 22);
   });
 
   const brick = makeCanvas(256, (ctx, s) => {

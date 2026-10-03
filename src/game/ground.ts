@@ -95,9 +95,11 @@ void prep(vec3 w) {
 vec3 suburbAlbedo(vec3 w) {
   prep(w);
   vec2 p = w.xz;
-  vec3 dead = vec3(0.03, 0.036, 0.022);
-  vec3 dry = vec3(0.078, 0.064, 0.034);
+  vec3 dead = vec3(0.042, 0.052, 0.026);
+  vec3 dry = vec3(0.086, 0.074, 0.034);
   vec3 col = mix(dead, dry, smoothstep(0.38, 0.74, gN));
+  float blades = suburbNoise(p * 7.4);
+  col = mix(col, col * vec3(0.7, 1.05, 0.62), smoothstep(0.46, 0.62, blades) * 0.42);
   col = mix(col, vec3(0.055, 0.034, 0.024), smoothstep(0.62, 0.9, suburbNoise(p * 1.7)));
   col = mix(col, vec3(0.065, 0.046, 0.03), gDirt);
   col = mix(col, vec3(0.05, 0.046, 0.042), gDrive);
@@ -105,7 +107,9 @@ vec3 suburbAlbedo(vec3 w) {
   float seam = step(0.92, fract(p.x * 0.7)) + step(0.92, fract(p.y * 0.7));
   walk *= mix(1.0, 0.72, clamp(seam, 0.0, 1.0));
   col = mix(col, walk, gWalk);
-  vec3 asp = mix(vec3(0.02, 0.019, 0.02), vec3(0.04, 0.038, 0.037), gN);
+  vec3 asp = mix(vec3(0.024, 0.023, 0.024), vec3(0.046, 0.043, 0.041), gN);
+  float grit = suburbNoise(p * 16.0);
+  asp = mix(asp, asp * vec3(1.22, 1.12, 1.05), grit * 0.28);
   float crack = 1.0 - smoothstep(0.0, 0.02, abs(suburbNoise(p * 0.28) - 0.5));
   asp = mix(asp, asp * 0.5, crack);
   float lane = step(abs(p.y + 5.5), 0.07) * step(abs(p.x), 14.0);
@@ -153,7 +157,7 @@ export function createGround(radius: number): THREE.Mesh {
     roughness: 0.9,
     metalness: 0.02,
   });
-  mat.customProgramCacheKey = () => "somnarch-ground-v4";
+  mat.customProgramCacheKey = () => "somnarch-ground-v5";
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uHouses = { value: houses };
     shader.uniforms.uDrives = { value: drives };
@@ -176,7 +180,7 @@ export function createGround(radius: number): THREE.Mesh {
       );
   };
 
-  const geo = new THREE.CircleGeometry(radius, 96);
+  const geo = new THREE.CircleGeometry(radius, 112);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.rotation.x = -Math.PI / 2;
   mesh.receiveShadow = true;
