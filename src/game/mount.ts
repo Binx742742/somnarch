@@ -145,6 +145,7 @@ declare global {
       getYaw: () => number;
       getSpeed: () => number;
       setKeys?: (codes: string[]) => void;
+      getActors?: () => { name: string; x: number; z: number; role: Role; self: boolean; bot: boolean }[];
     };
   }
 }
@@ -181,6 +182,9 @@ export class DreamSession {
   private foot = 0;
   private snapAcc = 0;
   private sendAcc = 0;
+  private helloAcc = 0;
+  private lobbyT = 0;
+  private begunSeed: number | null = null;
   private lookDx = 0;
   private lookDy = 0;
   private mouse = false;
@@ -220,6 +224,15 @@ export class DreamSession {
       setKeys: (codes) => {
         this.injected = codes.length ? new Set(codes) : null;
       },
+      getActors: () =>
+        (this.match?.actors ?? []).map((a) => ({
+          name: a.name,
+          x: Math.round(a.x * 10) / 10,
+          z: Math.round(a.z * 10) / 10,
+          role: a.role,
+          self: a.id === this.selfId,
+          bot: a.bot,
+        })),
     };
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.frame);
@@ -266,16 +279,18 @@ export class DreamSession {
     this.want = role;
     this.wants.set(this.selfId, role);
     this.room?.send({ k: "want", role, name: this.playerName });
-    if (this.isHost) this.pushScreenLobby("");
+    this.syncLobby();
   }
 
   begin(): void {
     if (!this.isHost && this.mode !== "solo") return;
     const roster = this.roster();
     const seed = (Math.random() * 1e9) >>> 0;
-    this.room?.send({ k: "begin", seed });
+    this.begunSeed = seed;
+    this.helloAcc = 0;
     this.mode = this.room ? "host" : "solo";
     this.bootMatch(createMatch(seed, roster));
+    this.pushMatch();
   }
 
   again(): void {
@@ -354,6 +369,13 @@ export class DreamSession {
     this.raf = requestAnimationFrame(this.frame);
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
+    if (this.inCircleLobby()) {
+      const before = this.lobbyT;
+      this.lobbyT += dt;
+      if (before < 6 && this.lobbyT >= 6) this.syncLobby();
+    } else {
+      this.lobbyT = 0;
+    }
     this.readLook();
     this.buildLocalInput();
     if (this.match && this.match.phase === "play" && !(this.pause && this.mode === "solo")) {
@@ -854,6 +876,11 @@ export class DreamSession {
         this.snapAcc = 0;
         this.room?.broadcast({ k: "snap", state: snapOf(this.match) });
       }
+      this.helloAcc += dt;
+      if (this.helloAcc >= 1) {
+        this.helloAcc = 0;
+        this.pushMatch();
+      }
     }
   }
 
@@ -901,22 +928,94 @@ export class DreamSession {
     });
   }
 
+  private inCircleLobby(): boolean {
+    return !!this.room && !this.match && this.mode !== "solo" && this.mode !== "host" && this.mode !== "client";
+  }
+
+  /** Lobby for both host and joiner. Never covers a match that has already begun. */
+  private syncLobby(): void {
+    if (!this.inCircleLobby()) return;
+    const others = this.memberList().filter((m) => m.id !== this.selfId);
+    let note: string;
+    if (others.length === 0) {
+      note =
+        this.lobbyT >= 6
+          ? "No one else is in this circle yet. Check the code."
+          : this.isHost
+            ? "Waiting for souls…"
+            : "Looking for the circle…";
+    } else if (others.some((m) => m.state === "blocked")) {
+      note = "A direct link failed. The same network is the sure path.";
+    } else if (others.some((m) => m.state === "linked")) {
+      note = this.isHost ? "A soul is linked. Begin when you are ready." : "";
+    } else {
+      note = "Linking the circle…";
+    }
+    this.pushScreenLobby(note);
+  }
+
+  /** Reliable begin + full snapshot. Retried until the friend's channel is open. */
+  private pushMatch(): void {
+    if (!this.room || !this.match || this.mode !== "host" || this.begunSeed == null) return;
+    const state = snapOf(this.match);
+    this.room.send({ k: "begin", seed: this.begunSeed });
+    this.room.send({ k: "snap", state });
+  }
+
+  /** A friend who links after the dream starts takes an empty chair. */
+  private seatArriving(peer: PeerInfo): void {
+    if (this.mode !== "host" || !this.match) return;
+    const existing = this.match.actors.find((a) => a.id === peer.id);
+    if (existing) {
+      existing.bot = false;
+      return;
+    }
+    const want = this.wants.get(peer.id) ?? "dreamer";
+    const name = (this.names.get(peer.id) || peer.name || "Dreamer").slice(0, 16);
+    if (want === "somnarch") {
+      const mon = this.match.actors.find((a) => a.role === "somnarch" && a.bot);
+      if (mon) {
+        mon.id = peer.id;
+        mon.bot = false;
+        return;
+      }
+    }
+    const bot = this.match.actors.find((a) => a.role === "dreamer" && a.bot);
+    if (!bot) return;
+    bot.id = peer.id;
+    bot.name = name;
+    bot.bot = false;
+  }
+
   private openRoom(): void {
     this.closeRoom();
+    this.begunSeed = null;
+    this.lobbyT = 0;
+    this.helloAcc = 0;
     this.room = new P2PRoom({
       room: `somn-${this.code}`,
       selfId: this.selfId,
       name: this.playerName,
       onPeersChanged: (peers) => {
         this.peers = peers;
-        if (this.match && (this.mode === "host" || this.isHost)) {
-          const live = new Set(peers.map((p) => p.id));
+        if (this.match && this.mode === "host") {
           for (const actor of this.match.actors) {
-            if (!actor.bot && actor.id !== this.selfId && !live.has(actor.id)) actor.bot = true;
+            if (actor.bot || actor.id === this.selfId) continue;
+            const peer = peers.find((p) => p.id === actor.id);
+            const dropped =
+              !peer ||
+              peer.connectionState === "failed" ||
+              peer.connectionState === "closed" ||
+              peer.connectionState === "disconnected";
+            if (dropped) actor.bot = true;
           }
+          for (const peer of peers) {
+            if (peer.connectionState === "connected") this.seatArriving(peer);
+          }
+          this.pushMatch();
         }
         this.room?.send({ k: "want", role: this.want, name: this.playerName });
-        if (this.isHost && this.mode !== "solo") this.pushScreenLobby(peers.length ? "" : "Waiting for souls…");
+        this.syncLobby();
       },
       onMessage: (from, data) => this.onNet(from, data),
     });
@@ -929,7 +1028,7 @@ export class DreamSession {
     if (msg.k === "want" && isRole(msg.role)) {
       this.wants.set(from, msg.role);
       if (msg.name) this.names.set(from, msg.name.slice(0, 16));
-      if (this.isHost) this.pushScreenLobby("");
+      this.syncLobby();
       return;
     }
     if (msg.k === "lobby" && this.mode !== "solo") {
@@ -951,22 +1050,39 @@ export class DreamSession {
       return;
     }
     if (msg.k === "begin") {
+      if (this.isHost || this.mode === "solo") return;
+      if (this.begunSeed === msg.seed || (this.begunSeed == null && this.match)) {
+        this.begunSeed = msg.seed;
+        this.mode = "client";
+        if (!this.match) {
+          this.renderer.setDolls(false);
+          this.onScreen({ kind: "play", pause: false });
+        }
+        return;
+      }
+      this.begunSeed = msg.seed;
       this.ended = false;
       this.pause = false;
-      this.mode = this.isHost ? "host" : "client";
-      if (!this.isHost) {
-        this.match = null;
-        this.renderer.setDolls(false);
-        this.onScreen({ kind: "play", pause: false });
-      }
+      this.mode = "client";
+      this.match = null;
+      this.renderer.setDolls(false);
+      this.onScreen({ kind: "play", pause: false });
       return;
     }
     if (msg.k === "input" && this.mode === "host" && msg.input) {
       this.remotes.set(from, { input: { ...emptyInput(), ...msg.input }, at: performance.now() });
       return;
     }
-    if (msg.k === "snap" && this.mode === "client" && msg.state) {
+    if (msg.k === "snap" && msg.state && !this.isHost && this.mode !== "solo") {
+      const fresh = !this.match;
+      this.mode = "client";
+      this.ended = this.match?.phase === "win" || this.match?.phase === "lose" ? this.ended : false;
       this.absorb(msg.state);
+      if (fresh) {
+        this.ended = false;
+        this.renderer.setDolls(false);
+        if (this.match?.phase === "play") this.onScreen({ kind: "play", pause: false });
+      }
     }
   }
 
@@ -1115,7 +1231,7 @@ function roleLabel(a: Actor): string {
 
 function linkLabel(state: string): string {
   if (state === "connected") return "linked";
-  if (state === "failed") return "blocked";
+  if (state === "failed" || state === "disconnected" || state === "closed") return "blocked";
   return "linking";
 }
 
