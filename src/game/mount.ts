@@ -18,6 +18,7 @@ import {
   objectiveFor,
   promptDoor,
   promptFor,
+  seedStreetSnares,
   step,
   weaponLabel,
   yawForDirection,
@@ -118,6 +119,7 @@ const GAME_KEYS = new Set([
   "KeyF",
   "KeyR",
   "KeyG",
+  "KeyC",
 ]);
 
 function makeId(): string {
@@ -139,6 +141,7 @@ function emptyInput(yaw = 0): Input {
     dashPulse: false,
     kitPulse: false,
     dropPulse: false,
+    hidePulse: false,
   };
 }
 
@@ -157,7 +160,20 @@ declare global {
       getYaw: () => number;
       getSpeed: () => number;
       setKeys?: (codes: string[]) => void;
-      getActors?: () => { name: string; x: number; z: number; role: Role; self: boolean; bot: boolean }[];
+      getActors?: () => {
+        name: string;
+        x: number;
+        z: number;
+        role: Role;
+        self: boolean;
+        bot: boolean;
+        hiding?: boolean;
+        found?: boolean;
+      }[];
+      getObjective?: () => string;
+      getPrompt?: () => string;
+      getBanner?: () => string;
+      getSnares?: () => { x: number; z: number }[];
     };
   }
 }
@@ -205,7 +221,8 @@ export class DreamSession {
   private hintText = "";
   private hintUntil = 0;
   private mouse = false;
-  private prevDown = { use: false, abl: false, dash: false, kit: false, drop: false };
+  private prevDown = { use: false, abl: false, dash: false, kit: false, drop: false, hide: false };
+  private snareStamp = "";
   private localInput = emptyInput();
   private readonly touch = {
     ix: 0,
@@ -218,6 +235,7 @@ export class DreamSession {
     dash: false,
     kit: false,
     drop: false,
+    hide: false,
   };
   private reduced = false;
   private raf = 0;
@@ -249,7 +267,13 @@ export class DreamSession {
           role: a.role,
           self: a.id === this.selfId,
           bot: a.bot,
+          hiding: a.hiding,
+          found: a.found,
         })),
+      getObjective: () => this.hud.objective?.textContent ?? "",
+      getPrompt: () => this.hud.prompt?.textContent ?? "",
+      getBanner: () => (this.hud.banner && !this.hud.banner.hidden ? (this.hud.banner.textContent ?? "") : ""),
+      getSnares: () => (this.match?.snares ?? []).map((s) => ({ x: Math.round(s.x * 10) / 10, z: Math.round(s.z * 10) / 10 })),
     };
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.frame);
@@ -349,7 +373,7 @@ export class DreamSession {
     this.lookDy += dy;
   }
 
-  setTouchFlag(key: "sprint" | "atk" | "interact" | "use" | "abl" | "dash" | "kit" | "drop", down: boolean): void {
+  setTouchFlag(key: "sprint" | "atk" | "interact" | "use" | "abl" | "dash" | "kit" | "drop" | "hide", down: boolean): void {
     this.touch[key] = down;
   }
 
@@ -366,6 +390,8 @@ export class DreamSession {
   }
 
   private bootMatch(match: Match): void {
+    seedStreetSnares(match, readStoredSnares());
+    this.snareStamp = snareStamp(match);
     this.match = match;
     this.ended = false;
     this.pause = false;
@@ -416,6 +442,7 @@ export class DreamSession {
     this.audio.heart = this.tension();
     this.audio.update(dt);
     this.hurt = Math.max(0, this.hurt - dt * 1.4);
+    this.rememberSnares();
     this.paint(dt);
     const view = this.makeView();
     this.renderer.render(dt, view);
@@ -480,6 +507,7 @@ export class DreamSession {
     const dashDown = this.down("Space") || this.touch.dash || padDash;
     const kitDown = this.down("KeyR") || this.touch.kit;
     const dropDown = this.down("KeyG") || this.touch.drop;
+    const hideDown = this.down("KeyC") || this.touch.hide;
     const input = this.localInput;
     input.ix = ix;
     input.iz = iz;
@@ -492,7 +520,8 @@ export class DreamSession {
     input.dashPulse = dashDown && !this.prevDown.dash;
     input.kitPulse = kitDown && !this.prevDown.kit;
     input.dropPulse = dropDown && !this.prevDown.drop;
-    this.prevDown = { use: useDown, abl: ablDown, dash: dashDown, kit: kitDown, drop: dropDown };
+    input.hidePulse = hideDown && !this.prevDown.hide;
+    this.prevDown = { use: useDown, abl: ablDown, dash: dashDown, kit: kitDown, drop: dropDown, hide: hideDown };
   }
 
   private inputMap(): Map<string, Input> {
@@ -556,6 +585,7 @@ export class DreamSession {
       else if (e.type === "door") this.audio.door(e.broken);
       else if (e.type === "listen" || e.type === "bell") this.audio.listen();
       else if (e.type === "ambush") this.audio.stun();
+      else if (e.type === "snare") this.audio.door(false);
       else if (e.type === "commit") this.audio.commit();
     }
   }
@@ -582,12 +612,14 @@ export class DreamSession {
         let near = 0;
         for (const a of this.match.actors) {
           if (a.role !== "dreamer" || a.dead) continue;
+          if (!dreamerVisibleToMonster(me, a)) continue;
           near = Math.max(near, 1 - Math.hypot(me.x - a.x, me.z - a.z) / 16);
         }
         return near;
       }
       return 0;
     }
+    if (mon.disguise) return Math.min(1, me.fear / 120);
     const near = Math.max(0, Math.min(1, 1 - Math.hypot(me.x - mon.x, me.z - mon.z) / 18));
     return Math.max(near, Math.min(1, me.fear / 120));
   }
@@ -670,13 +702,24 @@ export class DreamSession {
     const hpMax = me.role === "somnarch" ? RULES.MONSTER_HP : RULES.DREAMER_HP;
     if (this.hud.hp) this.hud.hp.style.transform = `scaleX(${Math.max(0, me.hp / hpMax)})`;
     if (this.hud.stam) this.hud.stam.style.transform = `scaleX(${me.stamina / 100})`;
+    const opening = this.match.time < RULES.OPEN_TIME;
     setText(
       this.hud.keys,
-      me.role === "somnarch"
-        ? "Bone and needle"
-        : me.lucid
-          ? `Lucid · nerve ${Math.round(me.nerve)}`
-          : `Latch-keys ${me.fragments}/${RULES.WAKE_NEED} · nerve ${Math.round(me.nerve)}`,
+      opening || me.snared || (me.role === "dreamer" && !me.setSnare)
+        ? me.role === "somnarch"
+          ? me.snared
+            ? "The snare takes the seeker."
+            : "Seeking"
+          : me.setSnare
+            ? "The snare is set."
+            : me.wire
+              ? "The wire is taken."
+              : "Find the wire"
+        : me.role === "somnarch"
+          ? "Bone and needle"
+          : me.lucid
+            ? `Lucid · nerve ${Math.round(me.nerve)}`
+            : `Latch-keys ${me.fragments}/${RULES.WAKE_NEED} · nerve ${Math.round(me.nerve)}`,
     );
     const channelMax =
       me.channel === 2
@@ -701,10 +744,16 @@ export class DreamSession {
                         ? RULES.RING_TIME
                         : me.channel === 11
                           ? RULES.AMBUSH_WIND
-                          : RULES.WAKE_TIME;
+                          : me.channel === 12
+                            ? RULES.SNARE_TIME
+                            : me.channel === 13
+                              ? RULES.TAKE_TIME
+                              : me.channel === 14
+                                ? RULES.WEAR_TIME
+                                : RULES.WAKE_TIME;
     if (this.hud.channel) this.hud.channel.hidden = me.channel === 0;
     if (this.hud.channelFill) this.hud.channelFill.style.transform = `scaleX(${Math.min(1, me.channelT / channelMax)})`;
-    const own = this.match.log.find((line) => (!line.who || line.who === me.id) && this.match!.time - line.at < 4.2);
+    const own = this.match.log.find((line) => (!line.who || line.who === me.id) && this.match!.time - line.at < 7);
     if (this.hud.banner) {
       this.hud.banner.hidden = !own;
       if (own) this.hud.banner.textContent = own.text;
@@ -737,20 +786,28 @@ export class DreamSession {
     if (me.hasteT > 0) pocket.push("Running");
     setText(this.hud.items, pocket.length ? pocket.join(" · ") : "Empty pockets");
     const ready: string[] = [];
-    if (me.abilityCd <= 0.05) {
-      if (me.role === "somnarch") ready.push("Q sense");
-      else if (me.lucid) ready.push("Q pulse");
-      else if (me.nerve >= 34) ready.push("Q veil");
+    if (this.match.time < RULES.OPEN_TIME) {
+      if (me.role === "dreamer") {
+        ready.push(me.hiding ? "C stand" : "C hide");
+        if (!me.wire && !me.setSnare) ready.push("E take wire");
+        else if (!me.setSnare) ready.push("E craft");
+      } else if (!me.snared) ready.push(me.disguise ? "Strike up close" : "E wear");
+    } else {
+      if (me.abilityCd <= 0.05) {
+        if (me.role === "somnarch") ready.push("Q sense");
+        else if (me.lucid) ready.push("Q pulse");
+        else if (me.nerve >= 34) ready.push("Q veil");
+      }
+      if (me.dashCd <= 0.05) ready.push("Space");
+      if (me.role === "somnarch" && me.kitCd <= 0.05) ready.push("R stitch");
+      if (me.role === "somnarch") {
+        if (this.match.ambush) ready.push("Ambush set");
+        else if (me.snareCd <= 0.05) ready.push("E ambush");
+        else ready.push(`Ambush ${Math.ceil(me.snareCd)}s`);
+      }
+      if (me.role === "dreamer" && me.lucid && me.tetherCd <= 0.05) ready.push("R tether");
+      if (me.items.length > 0) ready.push(`F ${itemLabel(me.items[0]!)}`);
     }
-    if (me.dashCd <= 0.05) ready.push("Space");
-    if (me.role === "somnarch" && me.kitCd <= 0.05) ready.push("R stitch");
-    if (me.role === "somnarch") {
-      if (this.match.ambush) ready.push("Ambush set");
-      else if (me.snareCd <= 0.05) ready.push("E ambush");
-      else ready.push(`Ambush ${Math.ceil(me.snareCd)}s`);
-    }
-    if (me.role === "dreamer" && me.lucid && me.tetherCd <= 0.05) ready.push("R tether");
-    if (me.items.length > 0) ready.push(`F ${itemLabel(me.items[0]!)}`);
     setText(this.hud.cds, ready.join("\n"));
     const mon = monsterOf(this.match);
     const showMon = !!mon && me.role === "dreamer" && (me.lucid || (me.senseT > 0 && !mon.dead));
@@ -812,7 +869,8 @@ export class DreamSession {
       ctx.fillRect(X(sc.ax) - 1.2, Y(sc.az) - 1.2, 2.4, 2.4);
       ctx.fillRect(X(sc.bx) - 1.2, Y(sc.bz) - 1.2, 2.4, 2.4);
     }
-    if (me.role === "dreamer" && this.match.bellX) {
+    const opening = this.match.time < RULES.OPEN_TIME;
+    if (me.role === "dreamer" && this.match.bellX && !opening) {
       ctx.fillStyle = "#ffb46a";
       ctx.beginPath();
       ctx.arc(X(this.match.bellX), Y(this.match.bellZ), 5.6, 0, Math.PI * 2);
@@ -822,7 +880,7 @@ export class DreamSession {
       ctx.fillStyle = door.latched ? "#c44536" : "rgba(228,211,176,0.85)";
       ctx.fillRect(X(door.x) - 1.5, Y(door.z) - 1.5, 3, 3);
     }
-    if (me.role === "dreamer") {
+    if (me.role === "dreamer" && !opening) {
       ctx.fillStyle = "#e4d3b0";
       ctx.beginPath();
       ctx.arc(X(0), Y(0), 3, 0, Math.PI * 2);
@@ -925,6 +983,7 @@ export class DreamSession {
         this.localInput.dashPulse = false;
         this.localInput.kitPulse = false;
         this.localInput.dropPulse = false;
+        this.localInput.hidePulse = false;
       }
     }
     if (this.mode === "host" && this.match) {
@@ -1198,6 +1257,21 @@ export class DreamSession {
     this.remotes.clear();
   }
 
+  private rememberSnares(): void {
+    if (!this.match) return;
+    const stamp = snareStamp(this.match);
+    if (stamp === this.snareStamp) return;
+    this.snareStamp = stamp;
+    try {
+      localStorage.setItem(
+        "somnarch-snares",
+        JSON.stringify(this.match.snares.map((s) => ({ x: Math.round(s.x * 10) / 10, z: Math.round(s.z * 10) / 10 }))),
+      );
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
   private bind(): void {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
@@ -1315,6 +1389,15 @@ export class DreamSession {
 }
 
 function lessonFor(prompt: string, me: Actor): { id: string; line: string } | null {
+  if (prompt.startsWith("Hold E to take the wire")) {
+    return { id: "wire", line: "Hold E on the wire. It is loot on the ground, not a finished snare." };
+  }
+  if (prompt.startsWith("Hold E to craft")) {
+    return { id: "craft", line: "Hold E to craft the snare from the wire. It stays where you finish." };
+  }
+  if (prompt.startsWith("Hold E to wear")) {
+    return { id: "wear", line: "Hold E beside loot, a street lamp, or a car. You look like it until you strike." };
+  }
   if (prompt.startsWith("Hold to listen")) return { id: "listen", line: "Hold E at a pale mote. The whisper stays on your list." };
   if (prompt.startsWith("Hold to latch")) return { id: "latch", line: "Hold E on the open door. Latch a door checks off for you." };
   if (prompt.startsWith("Hold E to force")) return { id: "force", line: "You are the forcer. Hold E to open a latched door." };
@@ -1331,10 +1414,10 @@ function lessonFor(prompt: string, me: Actor): { id: string; line: string } | nu
     return { id: "ambush", line: "Hold E at an open door or a porch lamp. The ambush is spent even if nobody walks in." };
   }
   if (prompt.startsWith("R stitch")) return { id: "stitch", line: "Face a dreamer and press R. The stitch pulls them in." };
-  if (prompt.startsWith("Q veil") || (me.role === "dreamer" && !me.lucid && me.abilityCd <= 0 && me.nerve >= 34)) {
+  if (prompt.startsWith("Q veil")) {
     return { id: "veil", line: "Q spends nerve and hides you, unless the butcher is close." };
   }
-  if (me.role === "somnarch" && me.abilityCd <= 0) {
+  if (prompt.startsWith("Q sense")) {
     return { id: "sense", line: "Q marks the nearest dreamer, if one is close enough." };
   }
   if (prompt.startsWith("R tether") || (me.role === "dreamer" && me.lucid && me.tetherCd <= 0)) {
@@ -1362,11 +1445,33 @@ function setText(el: HTMLElement | null, text: string): void {
 
 function roleLabel(a: Actor): string {
   if (a.dead) return "Stitched under";
+  if (a.snared) return "Seeker down";
   if (a.downed) return "Bleeding out";
-  if (a.role === "somnarch") return "The Somnarch";
-  const work = a.job ? jobLabel(a.job) : "";
-  if (a.lucid) return work ? `Lucid · ${work}` : "Lucid";
-  return work ? `Dreamer · ${work}` : "Dreamer";
+  if (a.role === "somnarch") return a.disguise ? "Seeker · disguised" : "Seeker";
+  if (a.hiding) return "Hider · hidden";
+  return "Hider";
+}
+
+function snareStamp(m: Match): string {
+  return m.snares.map((s) => `${s.x.toFixed(1)},${s.z.toFixed(1)}`).join("|");
+}
+
+function readStoredSnares(): { x: number; z: number }[] {
+  try {
+    const raw = localStorage.getItem("somnarch-snares");
+    if (!raw) return [];
+    const data = JSON.parse(raw) as unknown;
+    if (!Array.isArray(data)) return [];
+    const out: { x: number; z: number }[] = [];
+    for (const row of data) {
+      if (!row || typeof row !== "object") continue;
+      const spot = row as { x?: unknown; z?: unknown };
+      if (typeof spot.x === "number" && typeof spot.z === "number") out.push({ x: spot.x, z: spot.z });
+    }
+    return out.slice(0, 8);
+  } catch {
+    return [];
+  }
 }
 
 function linkLabel(state: string): string {

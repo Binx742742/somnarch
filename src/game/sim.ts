@@ -17,6 +17,7 @@ import {
   setLatchedDoors,
   spotClear,
 } from "./level";
+import { parkedCars, streetLamps } from "./street-props";
 
 export type Role = "dreamer" | "somnarch";
 export type WeaponKind = "iron" | "shears" | "lamp";
@@ -40,6 +41,8 @@ export type Input = {
   kitPulse: boolean;
   /** G: put the held weapon on the ground. */
   dropPulse: boolean;
+  /** C: crouch. A hiding dreamer is not revealed by the seeker's presence. */
+  hidePulse: boolean;
 };
 
 export type Actor = {
@@ -66,8 +69,8 @@ export type Actor = {
   dodgeT: number;
   stun: number;
   iframes: number;
-  /** 0 none, 1 wake, 2 revive, 3 kindle, 4 snuff, 5 latch, 6 break, 7 shortcut, 8 crank, 9 listen, 10 bell, 11 ambush */
-  channel: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  /** 0 none, 1 wake, 2 revive, 3 kindle, 4 snuff, 5 latch, 6 break, 7 shortcut, 8 crank, 9 listen, 10 bell, 11 ambush, 12 craft, 13 take wire, 14 wear */
+  channel: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
   channelT: number;
   channelTarget: string;
   items: ItemKind[];
@@ -114,8 +117,26 @@ export type Actor = {
   job: JobKind | null;
   /** This dreamer has latched a door. The checklist is personal. */
   didLatch: boolean;
-  /** Scripted calm so a solo Somnarch can walk up and learn stitch. */
+  /** Scripted calm so a solo seeker can walk up to an exposed hider. */
   calmT: number;
+  /** Crouched and still enough that the seeker does not get a reveal. */
+  hiding: boolean;
+  /** This hider has crouched at least once. */
+  didHide: boolean;
+  /** This hider has built a snare. */
+  setSnare: boolean;
+  /** Seeker has found this hider in the open. */
+  found: boolean;
+  /** Seeker stepped on a snare. */
+  snared: boolean;
+  /** Hider is carrying wire looted from the street. Not a finished trap. */
+  wire: boolean;
+  /** Must let go of E after looting before the craft hold counts. */
+  releaseE: boolean;
+  /** Empty, a loot kind, "streetlamp", or "car". Looks like that thing until a strike. */
+  disguise: string;
+  /** Struck a hider while wearing a disguise. */
+  didKill: boolean;
 };
 
 export type FeedLine = { text: string; who: string; at: number };
@@ -202,6 +223,7 @@ export type SimEvent =
   | { type: "listen" }
   | { type: "bell" }
   | { type: "ambush" }
+  | { type: "snare" }
   | { type: "commit" }
   | { type: "win" }
   | { type: "lose" };
@@ -224,6 +246,14 @@ const LISTEN_TIME = 0.95;
 const RING_R = 3.6;
 const RING_TIME = 2.2;
 const AMBUSH_WIND = 0.9;
+const SNARE_TIME = 1.15;
+const TAKE_TIME = 0.55;
+const WEAR_TIME = 0.5;
+const KILL_R = 2.45;
+const SNARE_REACH = 1.15;
+/** Snares inside this radius of the seeker spawn would be an instant loss. */
+const SNARE_SAFE = 18;
+const FOUND_R = 8.2;
 const AMBUSH_DOOR = 3.4;
 const AMBUSH_LAMP = 4.2;
 const WALK_E = 8.5;
@@ -316,7 +346,87 @@ function blankActor(partial: Pick<Actor, "id" | "name" | "role" | "bot" | "x" | 
     job: null,
     didLatch: false,
     calmT: 0,
+    hiding: false,
+    didHide: false,
+    setSnare: false,
+    found: false,
+    snared: false,
+    wire: false,
+    releaseE: false,
+    disguise: "",
+    didKill: false,
   };
+}
+
+/** One hider stands in the open. The others crouch where the seeker cannot see them from the spawn. */
+function placeHideSeekCast(actors: Actor[]): void {
+  const bots = actors.filter((a) => a.role === "dreamer" && a.bot);
+  const exposed = bots[0];
+  const rest = bots.slice(1);
+  const sx = MONSTER_SPAWN[0];
+  const sz = MONSTER_SPAWN[1];
+  const open = findCastSpot(
+    (x, z) => {
+      const d = Math.hypot(x - sx, z - sz);
+      return d >= 14 && d <= 22 && !lineBlocked(sx, sz, x, z);
+    },
+    sx,
+    sz + 16,
+  );
+  if (exposed && open) {
+    exposed.x = open.x;
+    exposed.z = open.z;
+    exposed.yaw = yawForDirection(sx - open.x, sz - open.z);
+    exposed.hiding = false;
+    exposed.calmT = 900;
+  }
+  const used = open ? [open] : [];
+  for (const hider of rest) {
+    const cover = findCastSpot((x, z) => {
+      const d = Math.hypot(x - sx, z - sz);
+      if (d < 10 || d > 40) return false;
+      if (!lineBlocked(sx, sz, x, z)) return false;
+      return used.every((p) => Math.hypot(p.x - x, p.z - z) > 8);
+    }, sx - 16, sz);
+    if (cover) {
+      hider.x = cover.x;
+      hider.z = cover.z;
+      used.push(cover);
+    }
+    hider.hiding = true;
+    hider.didHide = true;
+    hider.calmT = 900;
+  }
+}
+
+function findCastSpot(ok: (x: number, z: number) => boolean, preferX: number, preferZ: number): { x: number; z: number } | null {
+  let best: { x: number; z: number } | null = null;
+  let bestD = 1e9;
+  for (let x = -100; x <= 100; x += 4) {
+    for (let z = -100; z <= 100; z += 4) {
+      if (!spotClear(x, z) || !ok(x, z)) continue;
+      const d = Math.hypot(x - preferX, z - preferZ);
+      if (d < bestD) {
+        bestD = d;
+        best = { x, z };
+      }
+    }
+  }
+  return best;
+}
+
+/** Drop snares remembered from a previous hide, never on the seeker's doorstep. */
+export function seedStreetSnares(m: Match, saved: ReadonlyArray<{ x: number; z: number }>): void {
+  const sx = MONSTER_SPAWN[0];
+  const sz = MONSTER_SPAWN[1];
+  for (const spot of saved) {
+    if (!Number.isFinite(spot.x) || !Number.isFinite(spot.z)) continue;
+    if (!spotClear(spot.x, spot.z)) continue;
+    if (Math.hypot(spot.x - sx, spot.z - sz) < SNARE_SAFE) continue;
+    if (m.snares.some((s) => Math.hypot(s.x - spot.x, s.z - spot.z) < 1.6)) continue;
+    if (m.snares.length >= 8) break;
+    m.snares.push({ id: `snare-kept-${m.snares.length}`, x: spot.x, z: spot.z });
+  }
 }
 
 export function createMatch(seed: number, humans: HumanSpec[]): Match {
@@ -357,13 +467,7 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
     a.job = jobs[i] ?? null;
   });
   if (monsterHuman) {
-    const witness = actors.find((a) => a.role === "dreamer" && a.bot);
-    if (witness && spotClear(78, 54)) {
-      witness.x = 78;
-      witness.z = 54;
-      witness.yaw = 0;
-      witness.calmT = 400;
-    }
+    placeHideSeekCast(actors);
     const butcher = actors.find((a) => a.role === "somnarch");
     if (butcher) butcher.kitCd = 0;
   }
@@ -453,9 +557,19 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
     phones: 0,
     taughtLatch: false,
     phase: "play",
-    log: [{ text: "The far yards are quiet. Learn the porches before he crosses town.", who: "", at: 0 }],
-    banner: "Find a porch light. Hold E on the glowing mark. The butcher is still out.",
-    bannerT: 5.5,
+    log: [
+      {
+        text: monsterHuman
+          ? "Wear something in the street, or find a hider in the open."
+          : "Find the wire, then craft a snare.",
+        who: "",
+        at: 0,
+      },
+    ],
+    banner: monsterHuman
+      ? "Wear something in the street, or find a hider in the open."
+      : "Find the wire, then craft a snare.",
+    bannerT: 6.5,
     bannerWho: "",
     bellCd: 0,
     bellRing: 0,
@@ -593,6 +707,7 @@ function locomotion(
   if (a.buffT > 0) top *= 1.16;
   if (!monster && a.hasteT > 0) top *= 1.42;
   if (a.lucid) top *= 1.05;
+  if (!monster && a.hiding) top = Math.min(top, 1.25);
   if (a.dodgeT > 0) top = monster ? 12.4 : 11.2;
 
   const target = moving ? top : 0;
@@ -849,6 +964,7 @@ function weaponBlurb(kind: WeaponKind): string {
 }
 
 function tryPickup(m: Match, a: Actor, events: SimEvent[], grab = false): void {
+  if (m.time < OPEN_TIME) return;
   if (a.role !== "dreamer" || a.dead || a.downed) return;
   for (const p of m.pickups) {
     if (p.taken || (p.cool ?? 0) > 0) continue;
@@ -1312,11 +1428,16 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
     return;
   }
   if (!held || a.dead || a.stun > 0 || a.downed) {
+    if (!held) a.releaseE = false;
     a.channel = 0;
     a.channelT = 0;
     return;
   }
   if (a.role === "somnarch") {
+    if (m.time < OPEN_TIME && !a.snared) {
+      tickWear(m, a, dt);
+      return;
+    }
     const cellar = nearestShortcut(a);
     if (cellar) {
       runShortcut(m, a, cellar, dt);
@@ -1372,6 +1493,14 @@ function tickInteract(m: Match, a: Actor, held: boolean, dt: number, events: Sim
     a.channel = 0;
     a.channelT = 0;
     return;
+  }
+  if (!a.setSnare || m.time < OPEN_TIME) {
+    if (!a.setSnare) tickCraft(m, a, held, dt, events);
+    else if (a.channel === 12) {
+      a.channel = 0;
+      a.channelT = 0;
+    }
+    if (!a.setSnare || m.time < OPEN_TIME) return;
   }
   const downed = nearestDowned(m, a);
   if (downed && !a.downed) {
@@ -1711,6 +1840,7 @@ function tryAbility(m: Match, a: Actor, events: SimEvent[]): void {
     for (const o of m.actors) {
       if (o.role !== "dreamer" || o.dead) continue;
       const d = dist(a, o);
+      if (o.hiding && d > 2.5) continue;
       if (d < best) {
         best = d;
         nearest = o;
@@ -1824,17 +1954,24 @@ function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, event
     dashPulse: false,
     kitPulse: false,
     dropPulse: false,
+    hidePulse: false,
   };
   if (input.dropPulse) dropWeapon(m, a);
   if (a.downed) {
-    a.downT -= dt;
     a.spd = 0;
     a.vx = 0;
     a.vz = 0;
     a.channel = 0;
+    if (a.role === "somnarch") return;
+    a.downT -= dt;
     if (a.downT <= 0) killDreamer(m, a, events);
     return;
   }
+  if (input.hidePulse && a.role === "dreamer") {
+    a.hiding = !a.hiding;
+    if (a.hiding) a.didHide = true;
+  }
+  if (a.hiding && (input.sprint || a.dodgeT > 0)) a.hiding = false;
   const world = cameraToWorld(input.ix, input.iz, input.camYaw);
   if (!a.dead && Math.hypot(input.ix, input.iz) < 0.2 && a.dodgeT <= 0 && a.stun <= 0 && a.channel === 0) {
     a.yaw = approachYaw(a.yaw, input.camYaw, 8, dt);
@@ -1848,8 +1985,11 @@ function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, event
     tryKit(m, a, events);
   }
   if (input.atk) {
-    a.veilT = 0;
-    strike(m, a, input.camYaw, events);
+    if (a.role === "somnarch" && a.disguise) tryDisguiseKill(m, a, events);
+    else {
+      a.veilT = 0;
+      strike(m, a, input.camYaw, events);
+    }
   }
   tickInteract(m, a, input.interactHeld && Math.hypot(a.vx, a.vz) < WALK_E, dt, events);
   tryPickup(m, a, events, input.interactHeld);
@@ -1858,14 +1998,17 @@ function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, event
   input.dashPulse = false;
   input.kitPulse = false;
   input.dropPulse = false;
+  input.hidePulse = false;
 }
 
 function tickBot(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
   if (a.downed) {
-    a.downT -= dt;
     a.vx = 0;
     a.vz = 0;
     a.spd = 0;
+    a.channel = 0;
+    if (a.role === "somnarch") return;
+    a.downT -= dt;
     if (a.downT <= 0) killDreamer(m, a, events);
     return;
   }
@@ -1888,6 +2031,7 @@ function botMonster(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
   for (const o of m.actors) {
     if (o.role !== "dreamer" || o.dead) continue;
     const d = dist(a, o);
+    if (o.hiding && d > 2.5) continue;
     const los = d < 16 && !lineBlocked(a.x, a.z, o.x, o.z);
     const veiled = o.veilT > 0 && d > 3.4 && a.senseT <= 0 && o.markT <= 0;
     const noisy = !veiled && (Math.hypot(o.vx, o.vz) > 6.2 || o.hearT > 0);
@@ -2143,17 +2287,220 @@ function nearestFragment(m: Match, a: Actor): Pickup | null {
   return best;
 }
 
-function tickSnares(m: Match): void {
+function snareDenied(a: Actor, m: Match): string {
+  if (!a.wire) return nearestWire(m, a) ? "" : "The wire is still on the ground.";
+  if (!spotClear(a.x, a.z)) return "The ground will not hold a snare.";
+  const sx = MONSTER_SPAWN[0];
+  const sz = MONSTER_SPAWN[1];
+  if (Math.hypot(a.x - sx, a.z - sz) < SNARE_SAFE) return "Too close to where the seeker wakes.";
+  if (m.snares.some((s) => Math.hypot(a.x - s.x, a.z - s.z) < 2.2)) return "A snare is already here.";
+  return "";
+}
+
+function nearestWire(m: Match, a: Actor): Pickup | null {
+  let best: Pickup | null = null;
+  let bestD = 1.85;
+  for (const p of m.pickups) {
+    if (p.taken || p.kind !== "iron") continue;
+    const d = dist(a, p);
+    if (d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return best;
+}
+
+function wearName(kind: string): string {
+  if (kind === "streetlamp") return "street lamp";
+  if (kind.startsWith("car")) return "car";
+  if (kind === "iron") return "wire";
+  return itemLabel(kind).toLowerCase();
+}
+
+function nearestWear(m: Match, a: Actor): { kind: string } | null {
+  let best: { kind: string } | null = null;
+  let bestD = 2.5;
+  for (const p of m.pickups) {
+    if (p.taken) continue;
+    const d = dist(a, p);
+    if (d < bestD) {
+      bestD = d;
+      best = { kind: p.kind };
+    }
+  }
+  let lampD = best ? bestD : 3.3;
+  for (const [x, z] of streetLamps()) {
+    const d = Math.hypot(a.x - x, a.z - z);
+    if (d < lampD) {
+      lampD = d;
+      bestD = d;
+      best = { kind: "streetlamp" };
+    }
+  }
+  let carD = best ? bestD : 4;
+  for (let i = 0; i < PARKED.length; i++) {
+    const car = PARKED[i]!;
+    const d = Math.hypot(a.x - car.x, a.z - car.z);
+    if (d < carD) {
+      carD = d;
+      bestD = d;
+      best = { kind: `car:${i}` };
+    }
+  }
+  return best;
+}
+
+const PARKED = parkedCars();
+
+function tickCraft(m: Match, a: Actor, held: boolean, dt: number, events: SimEvent[]): void {
+  if (!held || a.dead || a.downed || a.stun > 0 || a.setSnare) {
+    if (a.channel === 12 || a.channel === 13) {
+      a.channel = 0;
+      a.channelT = 0;
+    }
+    return;
+  }
+  if (!a.wire) {
+    const wire = nearestWire(m, a);
+    if (!wire) {
+      a.channel = 0;
+      a.channelT = 0;
+      return;
+    }
+    if (a.channel !== 13 || a.channelTarget !== wire.id) {
+      a.channel = 13;
+      a.channelT = 0;
+      a.channelTarget = wire.id;
+    }
+    a.channelT += dt;
+    if (a.channelT < TAKE_TIME) return;
+    wire.taken = true;
+    a.wire = true;
+    a.releaseE = true;
+    a.channel = 0;
+    a.channelT = 0;
+    say(m, "The wire is taken.");
+    m.bannerT = 6.5;
+    events.push({ type: "pick", who: a.id, kind: "iron" });
+    return;
+  }
+  if (a.releaseE) {
+    a.channel = 0;
+    a.channelT = 0;
+    return;
+  }
+  if (snareDenied(a, m)) {
+    a.channel = 0;
+    a.channelT = 0;
+    return;
+  }
+  if (a.channel !== 12) {
+    a.channel = 12;
+    a.channelT = 0;
+    a.channelTarget = "snare";
+  }
+  a.channelT += dt;
+  if (a.channelT < SNARE_TIME) return;
+  m.snares.push({ id: `snare-${a.id}-${m.snares.length}`, x: a.x, z: a.z });
+  a.wire = false;
+  a.setSnare = true;
+  a.channel = 0;
+  a.channelT = 0;
+  say(m, "The snare is set.");
+  m.bannerT = 6.5;
+  events.push({ type: "snare" });
+}
+
+function tickWear(m: Match, a: Actor, dt: number): void {
+  const wear = nearestWear(m, a);
+  if (!wear) {
+    a.channel = 0;
+    a.channelT = 0;
+    return;
+  }
+  if (a.channel !== 14 || a.channelTarget !== wear.kind) {
+    a.channel = 14;
+    a.channelT = 0;
+    a.channelTarget = wear.kind;
+  }
+  a.channelT += dt;
+  if (a.channelT < WEAR_TIME) return;
+  a.disguise = wear.kind;
+  a.channel = 0;
+  a.channelT = 0;
+  say(m, `The seeker wears the ${wearName(wear.kind)}.`);
+  m.bannerT = 5.5;
+}
+
+function tryDisguiseKill(m: Match, a: Actor, events: SimEvent[]): void {
+  if (a.attackCd > 0 || !a.disguise) return;
+  a.attackCd = 0.85;
+  a.swing = 1;
+  a.disguise = "";
+  let victim: Actor | null = null;
+  let best = KILL_R;
+  for (const o of m.actors) {
+    if (o.role !== "dreamer" || o.dead) continue;
+    const d = dist(a, o);
+    if (d < best) {
+      best = d;
+      victim = o;
+    }
+  }
+  if (!victim) {
+    say(m, "The disguise falls.", a.id);
+    return;
+  }
+  victim.hp = 0;
+  victim.dead = true;
+  victim.downed = false;
+  victim.channel = 0;
+  a.didKill = true;
+  say(m, "The hider is killed.");
+  m.bannerT = 7;
+  events.push({ type: "death", who: victim.id });
+}
+
+function tickSnares(m: Match, events: SimEvent[]): void {
   if (m.snares.length === 0) return;
   for (const a of m.actors) {
-    if (a.role !== "dreamer" || a.dead || a.downed) continue;
-    const i = m.snares.findIndex((s) => Math.hypot(a.x - s.x, a.z - s.z) < 0.95);
+    if (a.role !== "somnarch" || a.dead || a.downed || a.snared) continue;
+    const i = m.snares.findIndex((s) => Math.hypot(a.x - s.x, a.z - s.z) < SNARE_REACH);
     if (i < 0) continue;
     m.snares.splice(i, 1);
-    a.stun = Math.max(a.stun, 1.35);
-    a.markT = Math.max(a.markT, 3);
-    a.hearT = Math.max(a.hearT, 0.45);
-    say(m, `${a.name} caught a thread.`);
+    a.snared = true;
+    a.hp = 0;
+    a.downed = true;
+    a.downT = 999;
+    a.spd = 0;
+    a.vx = 0;
+    a.vz = 0;
+    a.channel = 0;
+    say(m, "The snare takes the seeker.");
+    m.bannerT = 7;
+    events.push({ type: "down", who: a.id });
+    events.push({ type: "snare" });
+  }
+}
+
+function hiderInOpen(mon: Actor, dreamer: Actor): boolean {
+  if (dreamer.hiding || dreamer.dead || dreamer.role !== "dreamer") return false;
+  const d = dist(mon, dreamer);
+  if (d > FOUND_R) return false;
+  if (lineBlocked(mon.x, mon.z, dreamer.x, dreamer.z)) return false;
+  return true;
+}
+
+function tickFinds(m: Match): void {
+  const mon = monsterOf(m);
+  if (!mon || mon.dead || mon.downed) return;
+  for (const dreamer of m.actors) {
+    if (dreamer.role !== "dreamer" || dreamer.dead || dreamer.found || dreamer.hiding) continue;
+    if (!hiderInOpen(mon, dreamer)) continue;
+    dreamer.found = true;
+    say(m, "The hider is found.");
+    m.bannerT = 6.5;
   }
 }
 
@@ -2162,7 +2509,7 @@ function tickMood(m: Match, a: Actor, dt: number): void {
   if (a.role === "dreamer") {
     const mon = monsterOf(m);
     let threat = 0;
-    if (mon && !mon.dead && a.veilT <= 0) {
+    if (mon && !mon.dead && a.veilT <= 0 && !mon.disguise) {
       const d = dist(a, mon);
       const see = d < 14 && !lineBlocked(a.x, a.z, mon.x, mon.z);
       if (see) threat = Math.max(threat, 1 - d / 14);
@@ -2209,7 +2556,8 @@ export function step(m: Match, inputs: Map<string, Input>, dt: number): SimEvent
     if (m.phase !== "play") break;
   }
   if (m.phase === "play") {
-    tickSnares(m);
+    tickSnares(m, events);
+    tickFinds(m);
     tickAmbush(m, dt, events);
     separate(m);
   }
@@ -2224,17 +2572,23 @@ export function objectiveFor(m: Match, id: string): string {
   const lit = m.wards.filter((w) => w.lit).length;
   const hearthLine = `Hearths ${lit}/${m.wards.length}.`;
   if (me.role === "somnarch") {
+    if (me.snared) return "The snare takes the seeker.";
+    if (m.time < OPEN_TIME) {
+      if (me.didKill) return "The hider is killed.";
+      if (m.actors.some((a) => a.role === "dreamer" && a.found)) return "The hider is found.";
+      return "Wear something in the street, or find a hider in the open.";
+    }
     const close = livingDreamers(m).some((a) => dist(me, a) < 24);
     if (close) return "A dreamer is close. Walk up. Face them and press R to stitch.";
     const left = livingDreamers(m).length;
-    if (m.time < OPEN_TIME) return "They are still learning the streets.";
     return left > 0 ? `${left} still breathe. Snuff any hearth that catches.` : "The neighborhood is yours.";
   }
   if (me.dead) return "You were stitched under. The others still dream.";
   if (me.downed) return "You are bleeding out. Call for a tether.";
-  if (m.time < OPEN_TIME && !me.lucid) {
-    if (!m.bellStruck) return "The nursery bell is marked. Hold E on it. Keys glow beside you.";
-    return "He is still in the far yards. Listen at a pale mote, then find the keys.";
+  if (m.time < OPEN_TIME || !me.setSnare) {
+    if (me.setSnare) return "The snare is set.";
+    if (me.wire) return "The wire is taken.";
+    return "Find the wire, then craft a snare.";
   }
   if (!me.lucid) {
     if (me.fragments >= WAKE_NEED) return `Hold wake at the clock altar. ${hearthLine}`;
@@ -2248,7 +2602,24 @@ export function objectiveFor(m: Match, id: string): string {
 export function promptFor(m: Match, id: string): string {
   const me = m.actors.find((a) => a.id === id);
   if (!me || me.dead || m.phase !== "play") return "";
+  if (me.role === "somnarch" && me.snared) return "The snare takes the seeker.";
   if (me.downed) return "Bleeding out";
+  if (m.time < OPEN_TIME) {
+    if (me.role === "dreamer") {
+      if (me.channel === 13) return "Taking the wire";
+      if (me.channel === 12) return "Crafting the snare";
+      if (!me.wire && !me.setSnare) return nearestWire(m, me) ? "Hold E to take the wire" : "Find the wire";
+      if (me.releaseE) return "Release, then hold E to craft";
+      if (!me.setSnare) return "Hold E to craft a snare";
+      return me.hiding ? "The snare is set." : "Press C to hide";
+    }
+    if (me.didKill) return "The hider is killed.";
+    if (me.channel === 14) return "Wearing it";
+    if (me.disguise) return "Strike when a hider is close";
+    if (nearestWear(m, me)) return "Hold E to wear it";
+    if (m.actors.some((a) => a.role === "dreamer" && a.found)) return "The hider is found.";
+    return "Stand by a lamp, a car, or a piece of loot";
+  }
   if (me.channel === 1) return "Waking";
   if (me.channel === 2) return "Reviving";
   if (me.channel === 5) return "Latching the door";
@@ -2258,6 +2629,9 @@ export function promptFor(m: Match, id: string): string {
   if (me.channel === 9) return "Listening";
   if (me.channel === 10) return "Ringing";
   if (me.channel === 11) return "Setting the ambush";
+  if (me.channel === 12) return "Crafting the snare";
+  if (me.channel === 13) return "Taking the wire";
+  if (me.channel === 14) return "Wearing it";
   const winding = monsterOf(m);
   if (me.role === "dreamer" && winding && winding.commitT > 0 && dist(me, winding) < 16) return "Dodge the cut";
   const hop = nearestShortcut(me);
@@ -2328,6 +2702,20 @@ export type CheckRow = { label: string; done: boolean };
 export function checklistFor(m: Match, id: string): CheckRow[] {
   const me = m.actors.find((a) => a.id === id);
   if (!me) return [];
+  if (m.time < OPEN_TIME) {
+    if (me.role === "somnarch") {
+      return [
+        { label: "Find a hider in the open", done: m.actors.some((a) => a.role === "dreamer" && a.found) },
+        { label: "Wear a disguise", done: !!me.disguise || me.didKill },
+        { label: "Avoid the snares", done: me.snared },
+      ];
+    }
+    return [
+      { label: "Take the wire", done: me.wire || me.setSnare },
+      { label: "Craft a snare", done: me.setSnare },
+      { label: "Hide", done: me.hiding || me.didHide },
+    ];
+  }
   if (me.role === "somnarch") {
     const rows: CheckRow[] = m.actors
       .filter((a) => a.role === "dreamer")
@@ -2358,6 +2746,7 @@ export type WorldMark = { x: number; z: number; kind: string };
 export function marksFor(m: Match, id: string): { guide: WorldMark | null; here: WorldMark | null } {
   const me = m.actors.find((a) => a.id === id);
   if (!me || me.dead || m.phase !== "play") return { guide: null, here: null };
+  if (m.time < OPEN_TIME) return { guide: null, here: null };
   return { guide: guideMark(m, me), here: hereMark(m, me) };
 }
 
@@ -2407,6 +2796,7 @@ function guideMark(m: Match, a: Actor): WorldMark | null {
     let best: Actor | null = null;
     let bestD = 80;
     for (const o of livingDreamers(m)) {
+      if (!dreamerVisibleToMonster(a, o)) continue;
       const d = dist(a, o);
       if (d < bestD) {
         bestD = d;
@@ -2446,6 +2836,17 @@ export function failReason(m: Match, id: string, key: "e" | "q" | "r", sprinting
   const a = m.actors.find((actor) => actor.id === id);
   if (!a || a.dead || a.downed || m.phase !== "play") return "";
   if (key === "q" || key === "r") return "";
+  if ((m.time < OPEN_TIME || !a.setSnare) && a.role === "dreamer" && !a.setSnare) {
+    if (sprinting || Math.hypot(a.vx, a.vz) >= WALK_E) return "Sprinting. Release Shift, then hold E.";
+    if (!a.wire) return nearestWire(m, a) ? "" : "The wire is still on the ground.";
+    if (a.releaseE) return "";
+    return snareDenied(a, m);
+  }
+  if (m.time < OPEN_TIME && a.role === "somnarch") {
+    if (a.disguise || nearestWear(m, a)) return "";
+    return "Stand by a lamp, a car, or a piece of loot.";
+  }
+  if (m.time < OPEN_TIME) return "";
   if (!sprinting && Math.hypot(a.vx, a.vz) < WALK_E && a.channel !== 0) return "";
   if (sprinting || Math.hypot(a.vx, a.vz) >= WALK_E) return "Sprinting. Release Shift, then hold E.";
   if (a.channel !== 0) return "";
@@ -2505,6 +2906,10 @@ export const RULES = {
   LISTEN_TIME,
   RING_TIME,
   AMBUSH_WIND,
+  OPEN_TIME,
+  SNARE_TIME,
+  TAKE_TIME,
+  WEAR_TIME,
   HOP_TIME: 0.8,
   CRANK_TIME: 1.15,
   CELLAR_SLOW: 2.4,
@@ -2516,6 +2921,7 @@ export const RULES = {
 export function monsterVisibleTo(viewer: Actor, mon: Actor): boolean {
   if (viewer.role === "somnarch") return true;
   if (viewer.dead) return false;
+  if (mon.disguise) return false;
   if (viewer.senseT > 0) return true;
   const d = dist(viewer, mon);
   if (d < 3.6) return true;
@@ -2525,8 +2931,9 @@ export function monsterVisibleTo(viewer: Actor, mon: Actor): boolean {
 
 export function dreamerVisibleToMonster(mon: Actor, dreamer: Actor): boolean {
   if (dreamer.dead) return false;
-  if (dreamer.markT > 0 || mon.senseT > 0) return true;
   const d = dist(mon, dreamer);
+  if (dreamer.hiding && d > 2.5) return false;
+  if (dreamer.markT > 0 || mon.senseT > 0) return true;
   if (dreamer.veilT > 0 && d > 3.4) return false;
   if (d < 9) return true;
   if ((Math.hypot(dreamer.vx, dreamer.vz) > 6.2 || dreamer.hearT > 0) && d < 20) return true;

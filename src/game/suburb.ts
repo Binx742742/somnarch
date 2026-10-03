@@ -4,6 +4,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { BLOCKS, BOUNDARY, CAR_SPOTS, HILL, LAMPS, SHORTCUTS, TELLS, WARD_SPOTS, doorPoses, doorSpots, groundY, hitsBlock, type Block } from "./level";
 import { createGround } from "./ground";
 import { orient, surfaceAt, type Front } from "./roads";
+import { parkedCars, streetLamps } from "./street-props";
 import { createSuburbTextures, type SuburbTextures } from "./textures";
 
 export type SuburbHandle = {
@@ -1119,18 +1120,8 @@ function lampHead(x: number, z: number): [number, number] {
 }
 
 function buildLamps(scene: THREE.Scene, mats: Record<string, THREE.MeshStandardMaterial>, windows: THREE.BufferGeometry[]): void {
-  const spots: Array<[number, number]> = [
-    ...LAMPS,
-    [0, 12.4],
-    [-9.2, -5.5],
-    [9.4, -5.5],
-    [-4.15, -14.2],
-    [-16, 20.2],
-    [3.2, 6.5],
-  ];
   const bucket = new Bucket();
-  for (const [x, z] of spots) {
-    if (hitsBlock(x, z, 0.5) || Math.hypot(x, z) > BOUNDARY - 2) continue;
+  for (const [x, z] of streetLamps()) {
     const pole = new THREE.CylinderGeometry(0.06, 0.09, 4.5, 6);
     pole.translate(x, 2.25, z);
     bucket.add(mats.metal!, stamp(pole, new THREE.Color(0x3a342e)));
@@ -1210,21 +1201,7 @@ function buildTrees(scene: THREE.Scene, mats: Record<string, THREE.MeshStandardM
 }
 
 function buildCars(mats: Record<string, THREE.MeshStandardMaterial>, bucket: Bucket): void {
-  const paints = [0x6e3030, 0xd8d0c2, 0x243028, 0x8a6238, 0x3a4048];
-  let i = 0;
-  for (const block of BLOCKS) {
-    if (block.kind === "boiler" || block.kind === "chapel" || block.kind === "tower" || block.kind === "mausoleum") continue;
-    const face = orient(block);
-    const hd = face.depth * 0.5;
-    const side = face.width * 0.22;
-    const dist = 3.1;
-    const x = block.x + face.nx * (hd + dist) + face.tx * side;
-    const z = block.z + face.nz * (hd + dist) + face.tz * side;
-    if (hitsBlock(x, z, 0.8) || Math.hypot(x, z) > BOUNDARY - 2 || groundY(x, z) > 0.35) continue;
-    if (surfaceAt(x, z) === "island") continue;
-    addCar(bucket, mats, x, z, Math.atan2(face.nx, face.nz), paints[i % paints.length]!);
-    i++;
-  }
+  for (const car of parkedCars()) addCar(bucket, mats, car.x, car.z, car.yaw, car.paint);
 }
 
 function addCar(

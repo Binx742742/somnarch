@@ -6,6 +6,7 @@ import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { makeFigure, makeLoot, type Figure } from "./figures";
 import { groundY, hitsBlock } from "./level";
+import { parkedCars } from "./street-props";
 import { buildSuburb, type SuburbHandle } from "./suburb";
 import type { Actor, Pickup, Role, WeaponKind } from "./sim";
 
@@ -104,6 +105,7 @@ export class DreamRenderer {
   private readonly actorRoot = new THREE.Group();
   private readonly pickupRoot = new THREE.Group();
   private readonly figures = new Map<string, Figure>();
+  private readonly disguises = new Map<string, { kind: string; obj: THREE.Group }>();
   private readonly loots = new Map<string, THREE.Object3D>();
   private readonly suburb: SuburbHandle;
   private readonly ash: THREE.BufferGeometry;
@@ -114,7 +116,7 @@ export class DreamRenderer {
   private time = 0;
   private shake = 0;
   private readonly snareRoot = new THREE.Group();
-  private readonly snareMeshes: THREE.Mesh[] = [];
+  private readonly snareMeshes: THREE.Group[] = [];
   private readonly look = new THREE.Vector3();
   private readonly proj = new THREE.Vector3();
   private readonly guide: THREE.Mesh;
@@ -240,6 +242,7 @@ export class DreamRenderer {
     this.driftAsh(dt);
     this.followMoon(view);
     this.syncActors(dt, view);
+    this.syncDisguises(view);
     this.syncPickups(view);
     this.syncWards(view);
     this.syncDoors(view);
@@ -376,7 +379,10 @@ export class DreamRenderer {
       const y = lift + (actor.dead ? -1.7 : actor.downed ? -0.7 : bob);
       g.position.y += (y - g.position.y) * (1 - Math.exp(-6 * dt));
       g.rotation.z = actor.downed ? 1.15 : 0;
-      g.visible = !(actor.dead && g.position.y < -1.45) && !view.hidden.has(actor.id);
+      const crouch = actor.hiding && !actor.downed && !actor.dead ? 0.62 : 1;
+      g.scale.y += (crouch - g.scale.y) * (1 - Math.exp(-8 * dt));
+      const cloaked = actor.role === "somnarch" && !!actor.disguise;
+      g.visible = !cloaked && !(actor.dead && g.position.y < -1.45) && !view.hidden.has(actor.id);
       fig.ring.visible = !actor.dead && (actor.lucid || (actor.markT > 0 && view.viewerRole === "somnarch"));
       const stride = actor.dead || actor.downed ? 0 : Math.min(1, moving * 0.14);
       const phase = this.time * (fig.monster ? 6.2 : 9.2) + fig.seed;
@@ -400,7 +406,7 @@ export class DreamRenderer {
       syncHeld(fig, actor.role === "dreamer" ? actor.weapon : null);
       if (actor.role === "somnarch") {
         mon = actor;
-        this.monsterLight.position.set(actor.x, 1.8, actor.z);
+        if (!actor.disguise) this.monsterLight.position.set(actor.x, 1.8, actor.z);
       }
     }
     for (const [id, fig] of this.figures) {
@@ -409,8 +415,40 @@ export class DreamRenderer {
         this.figures.delete(id);
       }
     }
-    const showMon = !!mon && !view.hidden.has(mon.id) && view.mode === "play";
+    const showMon = !!mon && !mon.disguise && !view.hidden.has(mon.id) && view.mode === "play";
     this.monsterLight.intensity = showMon ? 4.5 : 0;
+  }
+
+  private syncDisguises(view: RenderView): void {
+    const seen = new Set<string>();
+    const show = view.mode === "play";
+    for (const actor of view.actors) {
+      if (actor.role !== "somnarch" || !actor.disguise || actor.dead || actor.downed) continue;
+      seen.add(actor.id);
+      let row = this.disguises.get(actor.id);
+      if (!row || row.kind !== actor.disguise) {
+        if (row) this.actorRoot.remove(row.obj);
+        const obj = disguiseObject(actor.disguise);
+        this.actorRoot.add(obj);
+        row = { kind: actor.disguise, obj };
+        this.disguises.set(actor.id, row);
+      }
+      row.obj.visible = show;
+      row.obj.position.set(actor.x, groundY(actor.x, actor.z), actor.z);
+      if (actor.disguise === "streetlamp") {
+        const ax = Math.abs(actor.x);
+        const az = Math.abs(actor.z);
+        if (ax >= az) row.obj.rotation.y = actor.x >= 0 ? Math.PI : 0;
+        else row.obj.rotation.y = actor.z >= 0 ? Math.PI / 2 : -Math.PI / 2;
+      } else if (actor.disguise.startsWith("car:")) {
+        row.obj.rotation.y = (row.obj.userData.yaw as number) ?? 0;
+      } else row.obj.rotation.y += 0.01;
+    }
+    for (const [id, row] of this.disguises) {
+      if (seen.has(id)) continue;
+      this.actorRoot.remove(row.obj);
+      this.disguises.delete(id);
+    }
   }
 
   private syncPickups(view: RenderView): void {
@@ -564,19 +602,33 @@ export class DreamRenderer {
 
   private syncSnares(view: RenderView): void {
     while (this.snareMeshes.length < view.snares.length) {
-      const mesh = new THREE.Mesh(
-        new THREE.TorusGeometry(0.42, 0.025, 6, 14),
+      const group = new THREE.Group();
+      const wire = new THREE.Mesh(
+        new THREE.TorusGeometry(0.62, 0.03, 6, 16),
         new THREE.MeshBasicMaterial({ color: 0xc44536 }),
       );
-      mesh.rotation.x = Math.PI / 2;
-      this.snareRoot.add(mesh);
-      this.snareMeshes.push(mesh);
+      wire.rotation.x = Math.PI / 2;
+      wire.position.y = 0.03;
+      const pegMat = new THREE.MeshStandardMaterial({ color: 0x3a2824, roughness: 0.78, metalness: 0.35 });
+      const pegGeo = new THREE.CylinderGeometry(0.03, 0.045, 0.38, 6);
+      const pegL = new THREE.Mesh(pegGeo, pegMat);
+      const pegR = new THREE.Mesh(pegGeo, pegMat);
+      pegL.position.set(-0.52, 0.2, 0);
+      pegR.position.set(0.52, 0.2, 0);
+      const trip = new THREE.Mesh(
+        new THREE.BoxGeometry(1.04, 0.018, 0.018),
+        new THREE.MeshBasicMaterial({ color: 0x8a3a32 }),
+      );
+      trip.position.y = 0.14;
+      group.add(wire, pegL, pegR, trip);
+      this.snareRoot.add(group);
+      this.snareMeshes.push(group);
     }
     this.snareMeshes.forEach((mesh, i) => {
       const snare = view.snares[i];
       mesh.visible = !!snare && view.mode === "play";
       if (!snare) return;
-      mesh.position.set(snare.x, groundY(snare.x, snare.z) + 0.06, snare.z);
+      mesh.position.set(snare.x, groundY(snare.x, snare.z), snare.z);
     });
   }
 
@@ -599,6 +651,71 @@ export class DreamRenderer {
     this.scene.add(dreamer.group, mon.group);
     this.scene.userData.showcase = [dreamer.group, mon.group];
   }
+}
+
+const PARKED = parkedCars();
+
+function coverOriginal(g: THREE.Group): THREE.Group {
+  g.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    const mat = mesh.material as THREE.Material | undefined;
+    if (!mat) return;
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -2;
+    mat.polygonOffsetUnits = -2;
+  });
+  return g;
+}
+
+function disguiseObject(kind: string): THREE.Group {
+  if (kind === "streetlamp") {
+    const g = new THREE.Group();
+    const metal = new THREE.MeshStandardMaterial({ color: 0x3a342e, roughness: 0.6, metalness: 0.45 });
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 4.5, 6), metal);
+    pole.position.y = 2.25;
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.06, 0.08), metal);
+    arm.position.set(0.35, 4.45, 0);
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.14, 8, 6),
+      new THREE.MeshStandardMaterial({ color: 0xffb46a, emissive: 0xffb46a, emissiveIntensity: 1.4, roughness: 0.35 }),
+    );
+    bulb.position.set(0.7, 4.28, 0);
+    g.add(pole, arm, bulb);
+    return coverOriginal(g);
+  }
+  if (kind.startsWith("car:")) {
+    const parked = PARKED[Number(kind.slice(4))] ?? PARKED[0];
+    const tint = parked?.paint ?? 0x6e3030;
+    const g = new THREE.Group();
+    g.userData.yaw = parked?.yaw ?? 0;
+    const paint = new THREE.MeshStandardMaterial({ color: tint, roughness: 0.55, metalness: 0.25 });
+    const cabinPaint = new THREE.MeshStandardMaterial({ color: tint, roughness: 0.55, metalness: 0.25 });
+    cabinPaint.color.multiplyScalar(0.85);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.48, 4.15), paint);
+    body.position.y = 0.58;
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.42, 1.9), cabinPaint);
+    cabin.position.set(0, 1, -0.25);
+    const glass = new THREE.Mesh(
+      new THREE.BoxGeometry(1.4, 0.32, 1.7),
+      new THREE.MeshStandardMaterial({ color: 0x1c2428, roughness: 0.15, metalness: 0.4 }),
+    );
+    glass.position.set(0, 1.02, -0.25);
+    const rubber = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
+    for (const [x, z] of [
+      [0.7, 1.25],
+      [-0.7, 1.25],
+      [0.7, -1.25],
+      [-0.7, -1.25],
+    ] as const) {
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.18, 8), rubber);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.set(x, 0.3, z);
+      g.add(wheel);
+    }
+    g.add(body, cabin, glass);
+    return coverOriginal(g);
+  }
+  return coverOriginal(makeLoot(kind));
 }
 
 function pullIn(px: number, pz: number, cx: number, cz: number): { x: number; z: number } {
