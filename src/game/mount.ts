@@ -8,8 +8,11 @@ import {
   checklistFor,
   createMatch,
   dreamerVisibleToMonster,
+  failReason,
   isWeapon,
   itemLabel,
+  jobLabel,
+  marksFor,
   monsterOf,
   monsterVisibleTo,
   objectiveFor,
@@ -64,6 +67,8 @@ export type HudNodes = {
   moodLabel: HTMLElement | null;
   lock: HTMLElement | null;
   hearts: HTMLElement | null;
+  teach: HTMLElement | null;
+  hint: HTMLElement | null;
 };
 
 type NetMsg =
@@ -76,9 +81,16 @@ type NetMsg =
 type SnapState = {
   time: number;
   phase: Match["phase"];
-  log: string[];
+  log: Match["log"];
   banner: string;
   bannerT: number;
+  bannerWho?: string;
+  bellCd?: number;
+  bellRing?: number;
+  bellStruck?: boolean;
+  bellX?: number;
+  bellZ?: number;
+  ambush?: Match["ambush"];
   actors: Actor[];
   pickups: Match["pickups"];
   wards?: Match["wards"];
@@ -187,6 +199,11 @@ export class DreamSession {
   private begunSeed: number | null = null;
   private lookDx = 0;
   private lookDy = 0;
+  private readonly taught = new Set<string>();
+  private teachLine = "";
+  private teachUntil = 0;
+  private hintText = "";
+  private hintUntil = 0;
   private mouse = false;
   private prevDown = { use: false, abl: false, dash: false, kit: false, drop: false };
   private localInput = emptyInput();
@@ -537,7 +554,8 @@ export class DreamSession {
       else if (e.type === "snuff") this.audio.snuff();
       else if (e.type === "stitch") this.audio.stitch();
       else if (e.type === "door") this.audio.door(e.broken);
-      else if (e.type === "listen") this.audio.listen();
+      else if (e.type === "listen" || e.type === "bell") this.audio.listen();
+      else if (e.type === "ambush") this.audio.stun();
       else if (e.type === "commit") this.audio.commit();
     }
   }
@@ -604,6 +622,9 @@ export class DreamSession {
       doors: this.match?.doors ?? [],
       focusDoor: this.match && me ? (promptDoor(this.match, me.id)?.id ?? null) : null,
       snares: this.match?.snares ?? [],
+      marks: this.match && me ? marksFor(this.match, me.id) : { guide: null, here: null },
+      bell: this.match ? { x: this.match.bellX, z: this.match.bellZ, ring: this.match.bellRing } : null,
+      ambush: this.match?.ambush ? { kind: this.match.ambush.kind, x: this.match.ambush.x, z: this.match.ambush.z } : null,
     };
   }
 
@@ -670,22 +691,40 @@ export class DreamSession {
                     ? RULES.CRANK_TIME
                     : me.channel === 9
                       ? RULES.LISTEN_TIME
-                      : RULES.WAKE_TIME;
+                      : me.channel === 10
+                        ? RULES.RING_TIME
+                        : me.channel === 11
+                          ? RULES.AMBUSH_WIND
+                          : RULES.WAKE_TIME;
     if (this.hud.channel) this.hud.channel.hidden = me.channel === 0;
     if (this.hud.channelFill) this.hud.channelFill.style.transform = `scaleX(${Math.min(1, me.channelT / channelMax)})`;
+    const own = this.match.log.find((line) => (!line.who || line.who === me.id) && this.match!.time - line.at < 4.2);
     if (this.hud.banner) {
-      this.hud.banner.hidden = this.match.bannerT <= 0;
-      if (this.match.bannerT > 0) this.hud.banner.textContent = this.match.banner;
+      this.hud.banner.hidden = !own;
+      if (own) this.hud.banner.textContent = own.text;
     }
     if (this.hud.log) {
-      this.hud.log.replaceChildren(
-        ...this.match.log.map((line) => {
+      const others = this.match.log.filter((line) => line.who && line.who !== me.id && this.match!.time - line.at < 14);
+      const sig = others.map((line) => line.text).join("|");
+      if (this.hud.log.dataset.sig !== sig) {
+        this.hud.log.dataset.sig = sig;
+        const nodes: HTMLElement[] = [];
+        if (others.length) {
+          const head = document.createElement("p");
+          head.className = "text-moon";
+          head.textContent = "Elsewhere";
+          nodes.push(head);
+        }
+        for (const line of others) {
           const p = document.createElement("p");
-          p.textContent = line;
-          return p;
-        }),
-      );
+          p.textContent = line.text;
+          nodes.push(p);
+        }
+        this.hud.log.replaceChildren(...nodes);
+      }
     }
+    this.paintTeach(me);
+    this.paintHint(me);
     const pocket = me.items.map(itemLabel);
     if (me.role === "dreamer" && me.weapon) pocket.push(weaponLabel(me.weapon));
     if (me.guard > 0) pocket.push("Ward up");
@@ -699,6 +738,11 @@ export class DreamSession {
     }
     if (me.dashCd <= 0.05) ready.push("Space");
     if (me.role === "somnarch" && me.kitCd <= 0.05) ready.push("R stitch");
+    if (me.role === "somnarch") {
+      if (this.match.ambush) ready.push("Ambush set");
+      else if (me.snareCd <= 0.05) ready.push("E ambush");
+      else ready.push(`Ambush ${Math.ceil(me.snareCd)}s`);
+    }
     if (me.role === "dreamer" && me.lucid && me.tetherCd <= 0.05) ready.push("R tether");
     if (me.items.length > 0) ready.push(`F ${itemLabel(me.items[0]!)}`);
     setText(this.hud.cds, ready.join("\n"));
@@ -761,6 +805,12 @@ export class DreamSession {
     for (const sc of SHORTCUTS) {
       ctx.fillRect(X(sc.ax) - 1.2, Y(sc.az) - 1.2, 2.4, 2.4);
       ctx.fillRect(X(sc.bx) - 1.2, Y(sc.bz) - 1.2, 2.4, 2.4);
+    }
+    if (me.role === "dreamer" && this.match.bellX) {
+      ctx.fillStyle = "#ffb46a";
+      ctx.beginPath();
+      ctx.arc(X(this.match.bellX), Y(this.match.bellZ), 3.2, 0, Math.PI * 2);
+      ctx.fill();
     }
     for (const door of this.match.doors) {
       ctx.fillStyle = door.latched ? "#c44536" : "rgba(228,211,176,0.85)";
@@ -845,7 +895,8 @@ export class DreamSession {
       }
       el.style.display = "block";
       el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
-      el.textContent = a.role === "somnarch" ? "Somnarch" : a.lucid ? `${a.name} · Lucid` : a.name;
+      const work = a.role === "dreamer" && a.job ? ` · ${jobLabel(a.job)}` : "";
+      el.textContent = a.role === "somnarch" ? "Somnarch" : a.lucid ? `${a.name} · Lucid${work}` : `${a.name}${work}`;
     });
     for (let i = actors.length; i < this.labelPool.length; i++) this.labelPool[i]!.style.display = "none";
   }
@@ -1092,9 +1143,18 @@ export class DreamSession {
       seed: 0,
       time: state.time,
       phase: state.phase,
-      log: state.log ?? [],
+      log: (state.log ?? []).map((line) =>
+        typeof line === "string" ? { text: line, who: "", at: state.time } : line,
+      ),
       banner: state.banner ?? "",
       bannerT: state.bannerT ?? 0,
+      bannerWho: state.bannerWho ?? "",
+      bellCd: state.bellCd ?? 0,
+      bellRing: state.bellRing ?? 0,
+      bellStruck: state.bellStruck ?? false,
+      bellX: state.bellX ?? 0,
+      bellZ: state.bellZ ?? 0,
+      ambush: state.ambush ?? null,
       actors: state.actors,
       pickups: state.pickups,
       wards: state.wards ?? [],
@@ -1202,6 +1262,79 @@ export class DreamSession {
   private onResize = (): void => {
     this.renderer.resize();
   };
+
+  armLook(): void {
+    if (this.mode === "menu" || this.pause || this.ended) return;
+    if (!window.matchMedia("(pointer: coarse)").matches) this.canvas.requestPointerLock();
+  }
+
+  setGamma(value: number): void {
+    this.renderer.setGamma(value);
+  }
+
+  private paintTeach(me: Actor): void {
+    if (!this.match) return;
+    const prompt = promptFor(this.match, me.id);
+    const lesson = lessonFor(prompt, me);
+    const now = performance.now();
+    if (lesson && !this.taught.has(lesson.id)) {
+      this.taught.add(lesson.id);
+      this.teachLine = lesson.line;
+      this.teachUntil = now + 5600;
+    }
+    if (this.hud.teach) {
+      const show = now < this.teachUntil && this.teachLine.length > 0;
+      this.hud.teach.hidden = !show;
+      if (show) this.hud.teach.textContent = this.teachLine;
+    }
+  }
+
+  private paintHint(me: Actor): void {
+    if (!this.match) return;
+    const now = performance.now();
+    if (this.keys.has("KeyE")) {
+      const sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+      const reason = failReason(this.match, me.id, "e", sprint);
+      if (reason) {
+        this.hintText = reason;
+        this.hintUntil = now + 280;
+      }
+    }
+    if (this.hud.hint) {
+      const show = now < this.hintUntil && this.hintText.length > 0;
+      this.hud.hint.hidden = !show;
+      if (show) this.hud.hint.textContent = this.hintText;
+    }
+  }
+}
+
+function lessonFor(prompt: string, me: Actor): { id: string; line: string } | null {
+  if (prompt.startsWith("Hold to listen")) return { id: "listen", line: "Hold E at a pale mote. The whisper stays on your list." };
+  if (prompt.startsWith("Hold to latch")) return { id: "latch", line: "Hold E on the open door. Latch a door checks off for you." };
+  if (prompt.startsWith("Hold E to force")) return { id: "force", line: "You are the forcer. Hold E to open a latched door." };
+  if (prompt.startsWith("Hold to kindle")) return { id: "kindle", line: "Hold E on a dark hearth. The light calls him." };
+  if (prompt.startsWith("Hold to wake")) return { id: "wake", line: "Hold E at the clock altar to wake." };
+  if (prompt === "Vault" || prompt === "Drain" || prompt === "Cellar") {
+    return { id: "way", line: "Hold E to slip through. It counts as a way out." };
+  }
+  if (prompt === "Crank") return { id: "crank", line: "Hold E on the car. The street hears it." };
+  if (prompt.startsWith("Hold E to ring") || prompt.startsWith("Hold E —")) {
+    return { id: "bell", line: "Only the ringer finishes the bell. Letting go early is quiet. A bad pull is noise, and the dream continues." };
+  }
+  if (prompt.startsWith("Hold E to set")) {
+    return { id: "ambush", line: "Hold E at an open door or a porch lamp. The ambush is spent even if nobody walks in." };
+  }
+  if (prompt.startsWith("R stitch")) return { id: "stitch", line: "Face a dreamer and press R. The stitch pulls them in." };
+  if (prompt.startsWith("Q veil") || (me.role === "dreamer" && !me.lucid && me.abilityCd <= 0 && me.nerve >= 34)) {
+    return { id: "veil", line: "Q spends nerve and hides you, unless the butcher is close." };
+  }
+  if (me.role === "somnarch" && me.abilityCd <= 0) {
+    return { id: "sense", line: "Q marks the nearest dreamer, if one is close enough." };
+  }
+  if (prompt.startsWith("R tether") || (me.role === "dreamer" && me.lucid && me.tetherCd <= 0)) {
+    return { id: "tether", line: "R passes a latch-key, or wakes a sleeper who already holds four." };
+  }
+  return null;
 }
 
 function approach(current: number, target: number, rate: number, dt: number): number {
@@ -1225,8 +1358,9 @@ function roleLabel(a: Actor): string {
   if (a.dead) return "Stitched under";
   if (a.downed) return "Bleeding out";
   if (a.role === "somnarch") return "The Somnarch";
-  if (a.lucid) return "Lucid";
-  return "Dreamer";
+  const work = a.job ? jobLabel(a.job) : "";
+  if (a.lucid) return work ? `Lucid · ${work}` : "Lucid";
+  return work ? `Dreamer · ${work}` : "Dreamer";
 }
 
 function linkLabel(state: string): string {
@@ -1242,6 +1376,13 @@ function snapOf(m: Match): SnapState {
     log: m.log,
     banner: m.banner,
     bannerT: m.bannerT,
+    bannerWho: m.bannerWho,
+    bellCd: m.bellCd,
+    bellRing: m.bellRing,
+    bellStruck: m.bellStruck,
+    bellX: m.bellX,
+    bellZ: m.bellZ,
+    ambush: m.ambush ? { ...m.ambush } : null,
     actors: m.actors.map((a) => ({ ...a, items: a.items.slice(), heard: (a.heard ?? []).slice() })),
     pickups: m.pickups.map((p) => ({ ...p })),
     wards: m.wards.map((w) => ({ ...w })),

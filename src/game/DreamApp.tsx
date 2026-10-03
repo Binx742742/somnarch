@@ -32,6 +32,8 @@ function collectHud(root: HTMLDivElement): HudNodes {
     moodLabel: q("mood-label"),
     lock: q("lock"),
     hearts: q("hearts"),
+    teach: q("teach"),
+    hint: q("hint"),
   };
 }
 
@@ -55,6 +57,8 @@ export function DreamApp() {
   const [name, setName] = useState("Ash");
   const [joinCode, setJoinCode] = useState("");
   const [muted, setMuted] = useState(false);
+  const [gamma, setGamma] = useState(1.5);
+  const [armed, setArmed] = useState(false);
   const [coarse, setCoarse] = useState(false);
   const [bootError, setBootError] = useState("");
 
@@ -76,8 +80,13 @@ export function DreamApp() {
     const saved = localStorage.getItem("somnarch-v1");
     if (saved) {
       try {
-        const data = JSON.parse(saved) as { name?: string; mute?: boolean };
+        const data = JSON.parse(saved) as { name?: string; mute?: boolean; gamma?: number };
         if (data.name) setName(cleanName(data.name));
+        if (typeof data.gamma === "number") {
+          const next = Math.max(0.75, Math.min(1.7, data.gamma));
+          setGamma(next);
+          session.setGamma(next);
+        }
         if (data.mute) {
           setMuted(true);
           session.setMuted(true);
@@ -105,8 +114,8 @@ export function DreamApp() {
     };
   }, []);
 
-  function persist(nextName: string, nextMute: boolean) {
-    localStorage.setItem("somnarch-v1", JSON.stringify({ v: 1, name: nextName, mute: nextMute }));
+  function persist(nextName: string, nextMute: boolean, nextGamma = gamma) {
+    localStorage.setItem("somnarch-v1", JSON.stringify({ v: 1, name: nextName, mute: nextMute, gamma: nextGamma }));
   }
 
   function play(role: "dreamer" | "somnarch") {
@@ -117,6 +126,10 @@ export function DreamApp() {
   }
 
   const playing = screen.kind === "play";
+
+  useEffect(() => {
+    if (screen.kind !== "play") setArmed(false);
+  }, [screen.kind]);
   const showTouch = coarse && playing && !screen.pause;
 
   return (
@@ -132,7 +145,7 @@ export function DreamApp() {
           <p className="font-display text-xs tracking-widest text-moon">FIVE-SOUL HORROR</p>
           <h1 className="mt-2 font-display text-4xl text-fg md:text-5xl">SOMNARCH</h1>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-muted">
-            Four dreamers. One stitched butcher. Lift a hearth iron, tailor's shears, or porch lamp from the yards. Draughts mend, hurry, hush, or ward. Listen at the pale motes.
+            Four dreamers. One stitched butcher. One hears the motes, one forces latches, one carries the ward, one rings the bell. The butcher sets a gate or a dark porch about once a minute. Lift iron, shears, or a lamp. Hold E on a glowing mark.
           </p>
           {bootError ? <p className="mt-4 text-sm text-blood">{bootError}</p> : null}
 
@@ -207,6 +220,8 @@ export function DreamApp() {
         <div data-hud="lock" className="dream-lock" hidden>
           <span className="dream-reticle" />
         </div>
+        <p data-hud="teach" hidden className="absolute top-36 right-8 left-8 text-center text-sm leading-snug text-moon" />
+        <p data-hud="hint" hidden className={`absolute right-8 left-8 text-center text-xs text-blood ${coarse ? "bottom-64" : "bottom-40"}`} />
         <p data-hud="prompt" className={`absolute right-4 left-4 text-center font-display text-sm text-moon ${coarse ? "bottom-52" : "bottom-28"}`} />
         <div className={`absolute left-4 flex w-44 flex-col gap-1 ${coarse ? "bottom-44" : "bottom-4"}`}>
           <div data-hud="channel" className="meter" hidden>
@@ -231,12 +246,44 @@ export function DreamApp() {
           <p data-hud="cds" className="ability-ready text-xs leading-relaxed whitespace-pre-line text-moon" />
           {!coarse ? (
             <p className="mt-2 text-xs text-muted">
-              <kbd>WASD</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> <kbd>E</kbd> vault <kbd>F</kbd> draught <kbd>G</kbd> drop <kbd>Q</kbd> <kbd>R</kbd> <kbd>LMB</kbd>
+              <kbd>WASD</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> <kbd>E</kbd> hold <kbd>F</kbd> draught <kbd>G</kbd> drop <kbd>Q</kbd> <kbd>R</kbd> <kbd>LMB</kbd>
             </p>
           ) : null}
+          <label className="pointer-events-auto mt-2 flex items-center justify-end gap-2 text-xs text-muted">
+            Street light
+            <input
+              aria-label="Street light"
+              type="range"
+              min={0.75}
+              max={1.7}
+              step={0.05}
+              value={gamma}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                setGamma(next);
+                sessionRef.current?.setGamma(next);
+                persist(name, muted, next);
+              }}
+            />
+          </label>
         </div>
         <div data-hud="names" className="pointer-events-none absolute inset-0" />
       </div>
+
+      {screen.kind === "play" && !screen.pause && !armed ? (
+        <button
+          type="button"
+          className="pointer-events-auto absolute inset-0 z-30 flex items-center justify-center bg-bg/60 px-6 text-center"
+          onClick={() => {
+            sessionRef.current?.armLook();
+            setArmed(true);
+          }}
+        >
+          <span className="max-w-md font-display text-xl leading-snug text-moon">
+            Click the street. WASD walks. The mouse looks. Hold E on a glowing mark.
+          </span>
+        </button>
+      ) : null}
 
       {showTouch ? <TouchPad session={sessionRef} /> : null}
 

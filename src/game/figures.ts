@@ -496,6 +496,12 @@ export function makeLoot(kind: string, bare = false): THREE.Group {
       new THREE.BoxGeometry(0.1, 0.18, 0.04),
       new THREE.MeshStandardMaterial({ color: 0x1a1816, emissive: 0xffb46a, emissiveIntensity: 0.7, roughness: 0.4 }),
     );
+  } else if (kind === "ear" || kind === "bar" || kind === "tend" || kind === "rope") {
+    const ink = kind === "ear" ? 0xe4d3b0 : kind === "bar" ? 0xc44536 : kind === "tend" ? 0x8fd0c6 : 0xffb46a;
+    token = new THREE.Mesh(
+      new THREE.OctahedronGeometry(kind === "rope" ? 0.2 : 0.16, 0),
+      new THREE.MeshStandardMaterial({ color: ink, emissive: ink, emissiveIntensity: 0.85, roughness: 0.3 }),
+    );
   } else if (kind === "bandage") {
     token = new THREE.Mesh(
       new THREE.BoxGeometry(0.22, 0.08, 0.16),
