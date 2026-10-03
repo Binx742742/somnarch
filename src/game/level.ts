@@ -11,7 +11,7 @@ export type Block = {
   interior?: boolean;
 };
 
-export const BOUNDARY = 74;
+export const BOUNDARY = 108;
 
 /** Overlook north-east of the mill. Characters and the hill mesh share this profile. */
 export const HILL = { x: 8, z: 56, r: 7.2, h: 3.8 };
@@ -43,6 +43,18 @@ export const BLOCKS: Block[] = [
   { kind: "orchard", x: -62, z: -24, w: 8, d: 7, h: 4.6, interior: true },
   { kind: "twin", x: -63, z: 22, w: 7, d: 6.5, h: 5 },
   { kind: "pump", x: 64, z: -18, w: 7, d: 6, h: 4.2 },
+  { kind: "clinic", x: -92, z: 34, w: 7.5, d: 6.5, h: 5.2, interior: true },
+  { kind: "bakery", x: 94, z: 36, w: 8, d: 7, h: 4.8, interior: true },
+  { kind: "parish", x: -92, z: -42, w: 8, d: 8, h: 5.8 },
+  { kind: "foundry", x: 92, z: -40, w: 10, d: 8, h: 5.4 },
+  { kind: "rowhouse", x: 16, z: 94, w: 12, d: 7, h: 6.2, interior: true },
+  { kind: "gatehouse", x: -10, z: -92, w: 8, d: 6, h: 4.4 },
+  { kind: "elm", x: -96, z: 6, w: 7, d: 6, h: 4.8 },
+  { kind: "cedar", x: 94, z: -30, w: 7, d: 6.5, h: 5 },
+  { kind: "annex", x: 46, z: 90, w: 8, d: 7, h: 5.1, interior: true },
+  { kind: "pool", x: -48, z: 90, w: 8, d: 6, h: 3.6 },
+  { kind: "corner", x: 72, z: 58, w: 7, d: 7, h: 5.2 },
+  { kind: "wicket", x: -40, z: -92, w: 7, d: 6, h: 4.2 },
 ];
 
 export const LAMPS: Array<[number, number]> = [
@@ -61,6 +73,12 @@ export const LAMPS: Array<[number, number]> = [
   [54, 4],
   [-54, -8],
   [54, -20],
+  [-82, 20],
+  [82, -16],
+  [20, 78],
+  [-24, -78],
+  [70, 48],
+  [-70, -52],
 ];
 
 /** Hearths a lucid dreamer must kindle. Placed in open floor or just outside a door. */
@@ -122,17 +140,28 @@ export const LOOT_SPOTS: Array<[number, number]> = [
   [-54, -16],
   [-54, 16],
   [48, -36],
+  [-80, 28],
+  [80, 22],
+  [24, 82],
+  [-20, 84],
+  [8, -80],
+  [-70, -70],
+  [70, -68],
+  [-88, -20],
+  [88, 16],
+  [60, 70],
+  [-60, 72],
 ];
 
 export const DREAMER_SPAWNS: Array<[number, number]> = [
-  [-56, 10],
-  [-48, -30],
-  [12, -56],
-  [56, 26],
+  [-88, 16],
+  [-28, -84],
+  [8, 100],
+  [88, -18],
 ];
 
 /** Far yard, so the open minutes are for learning the streets. */
-export const MONSTER_SPAWN: [number, number] = [58, 36];
+export const MONSTER_SPAWN: [number, number] = [78, 48];
 
 export type Shortcut = {
   id: string;
@@ -152,6 +181,9 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "school-barn", kind: "cellar", ax: 6, az: -21, bx: -16, bz: 44 },
   { id: "shelter-diner", kind: "cellar", ax: -6, az: -38, bx: -21, bz: -5 },
   { id: "grave-chapel", kind: "cellar", ax: 2, az: -48, bx: 20, bz: 14 },
+  { id: "north-fence", kind: "fence", ax: -30, az: 72, bx: 28, bz: 84 },
+  { id: "outer-drain", kind: "sewer", ax: 76, az: 18, bx: 76, bz: -26 },
+  { id: "annex-clinic", kind: "cellar", ax: 46, az: 82, bx: -86, bz: 34 },
 ];
 
 /** Porch whispers. One short listen each. They teach the night; they are not a win gate. */
@@ -200,6 +232,27 @@ export const TELLS: Tell[] = [
     x: 28,
     z: 8,
   },
+  {
+    id: "north",
+    title: "The north row",
+    line: "The long street above the mill is for running. Hide in the yards.",
+    x: -22,
+    z: 84,
+  },
+  {
+    id: "east",
+    title: "The east lane",
+    line: "The far avenue has a drain. It drops you south of the bakery.",
+    x: 86,
+    z: 14,
+  },
+  {
+    id: "hedge",
+    title: "The hedge",
+    line: "The west avenue is the long way home. The clinic porch faces that street.",
+    x: -80,
+    z: 26,
+  },
 ];
 
 export const CAR_SPOTS: Array<{ id: string; x: number; z: number }> = [
@@ -207,6 +260,8 @@ export const CAR_SPOTS: Array<{ id: string; x: number; z: number }> = [
   { id: "west-car", x: -14, z: 6 },
   { id: "south-car", x: 32, z: -30 },
   { id: "east-car", x: 40, z: -6 },
+  { id: "north-car", x: 4, z: 72 },
+  { id: "ring-car", x: -78, z: -8 },
 ];
 
 export const PATROL: Array<[number, number]> = [
@@ -223,6 +278,12 @@ export const PATROL: Array<[number, number]> = [
   [-6, 16],
   [58, 4],
   [-56, -12],
+  [-82, 8],
+  [82, 8],
+  [0, 84],
+  [0, -84],
+  [70, 64],
+  [-70, -60],
 ];
 
 const WALL = 0.72;

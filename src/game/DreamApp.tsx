@@ -127,7 +127,7 @@ export function DreamApp() {
           <p className="font-display text-xs tracking-widest text-moon">FIVE-SOUL HORROR</p>
           <h1 className="mt-2 font-display text-4xl text-fg md:text-5xl">SOMNARCH</h1>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-muted">
-            Four dreamers. One stitched butcher. Listen at the pale motes, latch the porch when he is close, or be sewn into the street.
+            Four dreamers. One stitched butcher. The streets run the length of the neighborhood — listen at the pale motes, latch a porch when he is close, or be sewn into the dark.
           </p>
           {bootError ? <p className="mt-4 text-sm text-blood">{bootError}</p> : null}
 

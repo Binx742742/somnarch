@@ -111,7 +111,7 @@ export class DreamRenderer {
     renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer = renderer;
     this.scene.background = new THREE.Color(0x07060c);
-    this.scene.fog = new THREE.FogExp2(0x141820, this.high ? 0.009 : 0.012);
+    this.scene.fog = new THREE.FogExp2(0x141820, this.high ? 0.0078 : 0.0105);
 
     this.buildLights();
     this.suburb = buildSuburb(this.scene, renderer, this.high);
