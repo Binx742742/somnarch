@@ -17,10 +17,58 @@ export type Figure = {
 
 const SKIN_HEX = [0xc4ad94, 0xb99680, 0xd2bba4, 0xa88874];
 
+function noiseMap(seed: number, stitches: boolean): THREE.CanvasTexture | null {
+  if (typeof document === "undefined") return null;
+  const c = document.createElement("canvas");
+  c.width = 128;
+  c.height = 128;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 700; i++) {
+    const x = Math.floor(Math.abs(Math.sin(seed * 12.3 + i * 1.7)) * 128);
+    const y = Math.floor(Math.abs(Math.sin(seed * 4.1 + i * 2.3)) * 128);
+    const v = 150 + ((i * 17) % 80);
+    ctx.fillStyle = `rgba(${v},${v},${v},0.55)`;
+    ctx.fillRect(x, y, 2, 2);
+  }
+  if (stitches) {
+    ctx.strokeStyle = "#f2e6d4";
+    ctx.lineWidth = 2;
+    for (let y = 18; y < 120; y += 22) {
+      ctx.beginPath();
+      for (let x = 8; x < 120; x += 8) {
+        const yy = y + (x % 16 === 0 ? -3 : 3);
+        if (x === 8) ctx.moveTo(x, yy);
+        else ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+    }
+  } else {
+    ctx.strokeStyle = "rgba(40,30,24,0.35)";
+    ctx.lineWidth = 1;
+    for (let y = 0; y < 128; y += 6) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(128, y + 1);
+      ctx.stroke();
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 export function makeFigure(coatHex: number, monster: boolean, variant = 0): Figure {
   const group = new THREE.Group();
+  const clothMap = noiseMap(variant + 2.2, false);
+  const fleshMap = noiseMap(variant + (monster ? 9.1 : 1.4), monster);
   const coat = new THREE.MeshStandardMaterial({
     color: coatHex,
+    map: clothMap,
     roughness: monster ? 0.86 : 0.78,
     metalness: 0.02,
     emissive: monster ? 0x140606 : 0x12080c,
@@ -28,6 +76,7 @@ export function makeFigure(coatHex: number, monster: boolean, variant = 0): Figu
   });
   const skin = new THREE.MeshStandardMaterial({
     color: monster ? 0x5c342e : SKIN_HEX[variant % SKIN_HEX.length],
+    map: fleshMap,
     roughness: monster ? 0.62 : 0.58,
     metalness: 0.02,
     emissive: monster ? 0x1a0808 : 0x000000,
