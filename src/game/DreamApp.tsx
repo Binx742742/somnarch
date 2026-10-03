@@ -86,6 +86,11 @@ export function DreamApp() {
         /* ignore broken save */
       }
     }
+    const circle = new URLSearchParams(window.location.search).get("circle");
+    if (circle) {
+      const code = circle.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+      if (code) setJoinCode(code);
+    }
     const query = window.matchMedia("(pointer: coarse)");
     const apply = () => setCoarse(query.matches || window.innerWidth < 780);
     apply();
@@ -151,6 +156,7 @@ export function DreamApp() {
                 const code = makeCode();
                 setName(who);
                 persist(who, muted);
+                window.history.replaceState(null, "", `/?circle=${code}`);
                 sessionRef.current?.hostCircle(code, who);
               }}
               onJoin={() => {
@@ -159,6 +165,7 @@ export function DreamApp() {
                 const who = cleanName(name);
                 setName(who);
                 persist(who, muted);
+                window.history.replaceState(null, "", `/?circle=${code}`);
                 sessionRef.current?.joinCircle(code, who);
               }}
             />
@@ -167,7 +174,10 @@ export function DreamApp() {
               screen={screen}
               onWant={(role) => sessionRef.current?.setWant(role)}
               onBegin={() => sessionRef.current?.begin()}
-              onLeave={() => sessionRef.current?.leave()}
+              onLeave={() => {
+                window.history.replaceState(null, "", "/");
+                sessionRef.current?.leave();
+              }}
             />
           )}
         </aside>
@@ -332,6 +342,29 @@ function Menu(props: {
   );
 }
 
+function CopyLink(props: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="border border-line px-4 py-3 text-left text-moon"
+      onClick={() => {
+        const link = `${window.location.origin}/?circle=${props.code}`;
+        window.history.replaceState(null, "", `/?circle=${props.code}`);
+        void navigator.clipboard?.writeText(link).then(
+          () => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1600);
+          },
+          () => setCopied(false),
+        );
+      }}
+    >
+      {copied ? "Circle link copied" : "Copy the circle link"}
+    </button>
+  );
+}
+
 function Lobby(props: {
   screen: Extract<Screen, { kind: "lobby" }>;
   onWant: (role: "dreamer" | "somnarch") => void;
@@ -342,7 +375,8 @@ function Lobby(props: {
   return (
     <div className="mt-6 flex flex-col gap-4">
       <p className="font-display text-3xl tracking-widest text-moon">{props.screen.code}</p>
-      <p className="text-sm text-muted">Share the code. Five seats. One Somnarch, four dreamers. The dream fills empty chairs.</p>
+      <p className="text-sm text-muted">Share the code, or the page link. Five seats. One Somnarch, four dreamers. The dream fills empty chairs.</p>
+      <CopyLink code={props.screen.code} />
       {props.screen.note ? <p className="text-sm text-moon">{props.screen.note}</p> : null}
       <ul className="flex flex-col gap-2">
         {props.screen.members.map((member) => (

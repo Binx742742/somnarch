@@ -150,7 +150,13 @@ export class P2PRoom {
   broadcast(data: unknown): void {
     const wire = JSON.stringify({ t: "d", d: data });
     for (const slot of this.peers.values()) {
-      if (slot.state?.readyState === "open") slot.state.send(wire);
+      const channel = slot.state;
+      if (!channel || channel.readyState !== "open" || channel.bufferedAmount > 1_000_000) continue;
+      try {
+        channel.send(wire);
+      } catch {
+        // Unreliable by contract: a full buffer or oversized packet is a drop.
+      }
     }
   }
 
@@ -159,7 +165,13 @@ export class P2PRoom {
     const wire = JSON.stringify({ t: "d", d: data });
     const targets = peerId ? [this.peers.get(peerId)] : [...this.peers.values()];
     for (const slot of targets) {
-      if (slot?.reliable?.readyState === "open") slot.reliable.send(wire);
+      const channel = slot?.reliable;
+      if (!channel || channel.readyState !== "open") continue;
+      try {
+        channel.send(wire);
+      } catch {
+        // The match hello retries; a single failed send must not kill the loop.
+      }
     }
   }
 
