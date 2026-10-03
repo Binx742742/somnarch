@@ -410,21 +410,76 @@ function pivotLeg(
   return pivot;
 }
 
-export function makeLoot(kind: string): THREE.Group {
+export function makeLoot(kind: string, bare = false): THREE.Group {
   const g = new THREE.Group();
-  const color = kind === "fragment" ? 0xe4d3b0 : kind === "clock" ? 0xc44536 : kind === "adrenaline" ? 0x8fd0c6 : 0xf0e6d8;
-  const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.035, 0.14, 2.4, 6),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.38, depthWrite: false }),
-  );
-  beam.position.y = 1.15;
-  const pad = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.22, 0.26, 0.06, 8),
-    new THREE.MeshStandardMaterial({ color: 0x3a342c, roughness: 0.8 }),
-  );
-  pad.position.y = 0.03;
+  const color =
+    kind === "fragment"
+      ? 0xe4d3b0
+      : kind === "clock"
+        ? 0xc44536
+        : kind === "adrenaline" || kind === "haste"
+          ? 0x8fd0c6
+          : kind === "mend"
+            ? 0xc44536
+            : kind === "hush"
+              ? 0x9eb4c8
+              : kind === "ward"
+                ? 0xe4d3b0
+                : kind === "iron"
+                  ? 0x8a8680
+                  : kind === "lamp"
+                    ? 0xffb46a
+                    : 0xf0e6d8;
+  if (!bare) {
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.035, 0.14, 2.4, 6),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.38, depthWrite: false }),
+    );
+    beam.position.y = 1.15;
+    const pad = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.22, 0.26, 0.06, 8),
+      new THREE.MeshStandardMaterial({ color: 0x3a342c, roughness: 0.8 }),
+    );
+    pad.position.y = 0.03;
+    g.add(beam, pad);
+  }
   let token: THREE.Object3D;
-  if (kind === "clock") {
+  if (kind === "iron") {
+    token = new THREE.Mesh(
+      new THREE.BoxGeometry(0.06, 0.72, 0.06),
+      new THREE.MeshStandardMaterial({ color: 0x3a3836, metalness: 0.72, roughness: 0.32 }),
+    );
+    const hook = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 0.06, 0.06),
+      new THREE.MeshStandardMaterial({ color: 0x2a2826, metalness: 0.6, roughness: 0.4 }),
+    );
+    hook.position.set(0.08, 0.3, 0);
+    token.add(hook);
+  } else if (kind === "shears") {
+    const steel = new THREE.MeshStandardMaterial({ color: 0xc8c2b6, metalness: 0.7, roughness: 0.28 });
+    token = new THREE.Group();
+    const a = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.42, 0.02), steel);
+    const b = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.42, 0.02), steel);
+    a.rotation.z = 0.35;
+    b.rotation.z = -0.35;
+    token.add(a, b);
+  } else if (kind === "lamp") {
+    token = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.2, 0.14),
+      new THREE.MeshStandardMaterial({
+        color: 0x2a2018,
+        emissive: 0xffb060,
+        emissiveIntensity: 1.6,
+        roughness: 0.4,
+      }),
+    );
+  } else if (kind === "mend" || kind === "haste" || kind === "hush" || kind === "ward") {
+    const glass = kind === "mend" ? 0xc44536 : kind === "haste" ? 0xd8fff4 : kind === "hush" ? 0xc5d4e4 : 0xf4efe6;
+    token = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.05, 0.16, 4, 6),
+      new THREE.MeshStandardMaterial({ color: glass, emissive: glass, emissiveIntensity: 0.35, roughness: 0.28, metalness: 0.08 }),
+    );
+  } else if (kind === "clock") {
     token = new THREE.Mesh(
       new THREE.CylinderGeometry(0.16, 0.16, 0.05, 12),
       new THREE.MeshStandardMaterial({ color: 0x1a100e, emissive: 0xc44536, emissiveIntensity: 0.8, metalness: 0.4, roughness: 0.35 }),
@@ -458,7 +513,8 @@ export function makeLoot(kind: string): THREE.Group {
       }),
     );
   }
-  token.position.y = 0.42;
-  g.add(beam, pad, token);
+  token.position.y = bare ? 0.15 : 0.42;
+  g.add(token);
+  g.userData.kind = kind;
   return g;
 }

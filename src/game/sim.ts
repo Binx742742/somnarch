@@ -18,8 +18,10 @@ import {
 } from "./level";
 
 export type Role = "dreamer" | "somnarch";
-export type ItemKind = "bandage" | "adrenaline" | "clock";
-export type PickupKind = "fragment" | "phone" | ItemKind;
+export type WeaponKind = "iron" | "shears" | "lamp";
+export type PotionKind = "mend" | "haste" | "hush" | "ward";
+export type ItemKind = "bandage" | "adrenaline" | "clock" | PotionKind;
+export type PickupKind = "fragment" | "phone" | ItemKind | WeaponKind;
 
 export type Input = {
   ix: number;
@@ -33,6 +35,8 @@ export type Input = {
   dashPulse: boolean;
   /** R: tether (lucid dreamer) or stitch (Somnarch). Veil is Q before lucidity. */
   kitPulse: boolean;
+  /** G: put the held weapon on the ground. */
+  dropPulse: boolean;
 };
 
 export type Actor = {
@@ -95,6 +99,14 @@ export type Actor = {
   heard: string[];
   /** Somnarch heavy-cut windup. Pays off at 0 after it has been set. */
   commitT: number;
+  /** One held yard weapon. Null is bare hands. */
+  weapon: WeaponKind | null;
+  /** Pickup id just dropped or swapped, so it is not taken again while you stand on it. */
+  armLock: string;
+  /** Damage the next cut loses before it reaches hp. */
+  guard: number;
+  /** Runner draught. Faster than the adrenaline buff. */
+  hasteT: number;
 };
 
 export type Snare = { id: string; x: number; z: number };
@@ -106,6 +118,8 @@ export type Pickup = {
   x: number;
   z: number;
   taken: boolean;
+  /** Seconds before a dreamer can take this again. */
+  cool: number;
 };
 
 export type Ward = {
@@ -257,6 +271,10 @@ function blankActor(partial: Pick<Actor, "id" | "name" | "role" | "bot" | "x" | 
     usedReset: false,
     heard: [],
     commitT: 0,
+    weapon: null,
+    armLock: "",
+    guard: 0,
+    hasteT: 0,
   };
 }
 
@@ -321,17 +339,45 @@ export function createMatch(seed: number, humans: HumanSpec[]): Match {
     "phone",
     "phone",
     "phone",
+    "iron",
+    "shears",
+    "lamp",
+    "mend",
+    "haste",
+    "haste",
+    "hush",
+    "ward",
   ];
-  const pickups: Pickup[] = [];
-  for (let i = 0; i < plan.length && i < spots.length; i++) {
-    const spot = spots[i]!;
+  const fixed: Array<{ kind: PickupKind; x: number; z: number }> = [
+    { kind: "iron", x: -80, z: 22 },
+    { kind: "mend", x: -84, z: 10 },
+    { kind: "hush", x: -74, z: 18 },
+    { kind: "shears", x: 6, z: 8 },
+    { kind: "lamp", x: 28, z: 12 },
+    { kind: "ward", x: 12, z: -8 },
+  ];
+  const pickups: Pickup[] = fixed.map((f, i) => ({
+    id: `loot-f${i}`,
+    kind: f.kind,
+    x: f.x,
+    z: f.z,
+    taken: false,
+    cool: 0,
+  }));
+  const crowded = (x: number, z: number) => pickups.some((p) => Math.hypot(p.x - x, p.z - z) < 2.4);
+  let placed = 0;
+  for (const spot of spots) {
+    if (placed >= plan.length) break;
+    if (crowded(spot[0], spot[1])) continue;
     pickups.push({
-      id: `loot-${i}`,
-      kind: plan[i]!,
+      id: `loot-${placed}`,
+      kind: plan[placed]!,
       x: spot[0],
       z: spot[1],
       taken: false,
+      cool: 0,
     });
+    placed += 1;
   }
 
   return {
@@ -394,6 +440,7 @@ function decay(a: Actor, dt: number): void {
   a.stun = Math.max(0, a.stun - dt);
   a.iframes = Math.max(0, a.iframes - dt);
   a.buffT = Math.max(0, a.buffT - dt);
+  a.hasteT = Math.max(0, (a.hasteT ?? 0) - dt);
   a.senseT = Math.max(0, a.senseT - dt);
   a.swing = Math.max(0, a.swing - dt * 3.1);
   a.botTap = Math.max(0, a.botTap - dt);
@@ -474,6 +521,7 @@ function locomotion(
   if (!leash && sprint && !stalking && (monster || a.stamina > 1) && a.dodgeT <= 0) top *= monster ? 1.72 : 1.56;
   if (!monster && a.burstT > 0) top *= 1.9;
   if (a.buffT > 0) top *= 1.16;
+  if (!monster && a.hasteT > 0) top *= 1.42;
   if (a.lucid) top *= 1.05;
   if (a.dodgeT > 0) top = monster ? 12.4 : 11.2;
 
@@ -481,7 +529,7 @@ function locomotion(
   a.spd += (target - a.spd) * (1 - Math.exp(-12 * dt));
   if (sprint && moving && a.dodgeT <= 0) a.veilT = 0;
   if (!monster && sprint && moving && a.dodgeT <= 0 && a.spd > 1) {
-    a.stamina = Math.max(0, a.stamina - 24 * dt);
+    a.stamina = Math.max(0, a.stamina - (a.hasteT > 0 ? 10 : 24) * dt);
     if (a.veilT <= 0) a.hearT = 0.35;
   } else if (!monster) {
     const calm = 1 - Math.min(0.7, a.fear / 140);
@@ -593,6 +641,18 @@ function hurtDreamer(m: Match, a: Actor, amount: number, events: SimEvent[]): vo
     killDreamer(m, a, events);
     return;
   }
+  if (a.guard > 0 && amount < 200) {
+    const soak = Math.min(a.guard, amount);
+    a.guard -= soak;
+    amount -= soak;
+    if (amount <= 0) {
+      say(m, `The ward on ${a.name} takes the cut.`);
+      a.iframes = 0.35;
+      events.push({ type: "hit", victim: a.id, amount: soak });
+      return;
+    }
+    say(m, `The ward on ${a.name} breaks.`);
+  }
   a.hp -= amount;
   a.iframes = 0.45;
   a.channel = 0;
@@ -652,10 +712,38 @@ function damageMonster(m: Match, amount: number, events: SimEvent[]): void {
   }
 }
 
+export function isWeapon(kind: string): kind is WeaponKind {
+  return kind === "iron" || kind === "shears" || kind === "lamp";
+}
+
+export function weaponLabel(kind: string): string {
+  if (kind === "iron") return "Hearth iron";
+  if (kind === "shears") return "Tailor's shears";
+  if (kind === "lamp") return "Porch lamp";
+  return kind;
+}
+
+export function itemLabel(kind: string): string {
+  if (kind === "bandage") return "Bandage";
+  if (kind === "adrenaline") return "Adrenaline";
+  if (kind === "mend") return "Mending";
+  if (kind === "haste") return "Runner";
+  if (kind === "hush") return "Hush";
+  if (kind === "ward") return "Ward";
+  if (kind === "clock") return "Alarm";
+  return weaponLabel(kind);
+}
+
+function weaponBlurb(kind: WeaponKind): string {
+  if (kind === "iron") return "It reaches, and a lucid swing bites.";
+  if (kind === "shears") return "They snip fast and short.";
+  return "A flare hushes you and makes him flinch.";
+}
+
 function tryPickup(m: Match, a: Actor, events: SimEvent[]): void {
   if (a.role !== "dreamer" || a.dead || a.downed) return;
   for (const p of m.pickups) {
-    if (p.taken) continue;
+    if (p.taken || (p.cool ?? 0) > 0) continue;
     if (dist(a, p) > 1.45) continue;
     if (p.kind === "fragment") {
       if (a.fragments >= WAKE_NEED || a.lucid) continue;
@@ -668,12 +756,45 @@ function tryPickup(m: Match, a: Actor, events: SimEvent[]): void {
       m.phones += 1;
       say(m, `${a.name} found a phone piece (${m.phones}/3).`);
       events.push({ type: "pick", who: a.id, kind: p.kind });
+    } else if (isWeapon(p.kind)) {
+      if (!a.weapon) {
+        p.taken = true;
+        a.weapon = p.kind;
+        a.armLock = "";
+        say(m, `${a.name} lifts the ${weaponLabel(p.kind).toLowerCase()}. ${weaponBlurb(p.kind)}`);
+        events.push({ type: "pick", who: a.id, kind: p.kind });
+      } else if (p.id !== a.armLock && a.weapon !== p.kind) {
+        const old = a.weapon;
+        a.weapon = p.kind;
+        p.kind = old;
+        p.cool = 0.85;
+        a.armLock = p.id;
+        say(m, `${a.name} swaps to the ${weaponLabel(a.weapon).toLowerCase()}. ${weaponBlurb(a.weapon)}`);
+        events.push({ type: "pick", who: a.id, kind: a.weapon });
+      }
     } else if (a.items.length < 3) {
       p.taken = true;
       a.items.push(p.kind);
+      say(m, `${a.name} pockets ${itemLabel(p.kind).toLowerCase()}.`);
       events.push({ type: "pick", who: a.id, kind: p.kind });
     }
   }
+}
+
+function dropWeapon(m: Match, a: Actor): void {
+  if (a.role !== "dreamer" || a.dead || a.downed || !a.weapon) return;
+  const dropped: Pickup = {
+    id: `drop-${a.id}-${m.pickups.length}`,
+    kind: a.weapon,
+    x: a.x,
+    z: a.z,
+    taken: false,
+    cool: 0.75,
+  };
+  m.pickups.push(dropped);
+  say(m, `${a.name} drops the ${weaponLabel(a.weapon).toLowerCase()}.`);
+  a.armLock = dropped.id;
+  a.weapon = null;
 }
 
 function becomeLucid(m: Match, a: Actor, events: SimEvent[]): void {
@@ -691,15 +812,28 @@ function becomeLucid(m: Match, a: Actor, events: SimEvent[]): void {
   }
 }
 
-function useItem(m: Match, a: Actor, events: SimEvent[]): void {
-  if (a.dead || a.downed || a.items.length === 0 || a.role !== "dreamer") return;
-  const it = a.items.shift()!;
-  if (it === "bandage") {
-    a.hp = Math.min(DREAMER_HP, a.hp + 48);
-    say(m, `${a.name} bound a wound.`);
+function drink(m: Match, a: Actor, it: ItemKind, events: SimEvent[]): void {
+  if (it === "bandage" || it === "mend") {
+    a.hp = Math.min(DREAMER_HP, a.hp + (it === "bandage" ? 48 : 42));
+    say(m, it === "bandage" ? `${a.name} bound a wound.` : `${a.name} drinks a mending draught. The cut closes.`);
   } else if (it === "adrenaline") {
     a.stamina = Math.min(100, a.stamina + 70);
     a.buffT = Math.max(a.buffT, 4.2);
+    say(m, `${a.name} takes adrenaline. Breath comes back.`);
+  } else if (it === "haste") {
+    a.stamina = Math.min(100, a.stamina + 55);
+    a.hasteT = Math.max(a.hasteT, 5.2);
+    say(m, `${a.name} drinks the runner draught. The street pulls.`);
+  } else if (it === "hush") {
+    a.veilT = Math.max(a.veilT, 4);
+    a.nerve = Math.min(100, a.nerve + 22);
+    a.fear = Math.max(0, a.fear - 28);
+    a.hearT = 0;
+    events.push({ type: "veil" });
+    say(m, `${a.name} drinks a hush. Breath leaves the street.`);
+  } else if (it === "ward") {
+    a.guard = 36;
+    say(m, `${a.name} drinks a ward. The next cut lands softer.`);
   } else {
     const mon = monsterOf(m);
     if (mon && dist(a, mon) < 16) {
@@ -711,6 +845,22 @@ function useItem(m: Match, a: Actor, events: SimEvent[]): void {
       say(m, "The alarm rings, and something turns to listen.");
       if (mon) mon.hearT = 2;
     }
+  }
+}
+
+function useItem(m: Match, a: Actor, events: SimEvent[]): void {
+  if (a.dead || a.downed || a.items.length === 0 || a.role !== "dreamer") return;
+  const it = a.items.shift();
+  if (it) drink(m, a, it, events);
+}
+
+function sip(m: Match, a: Actor, kinds: ItemKind[], events: SimEvent[]): void {
+  for (const kind of kinds) {
+    const i = a.items.indexOf(kind);
+    if (i < 0) continue;
+    const it = a.items.splice(i, 1)[0];
+    if (it) drink(m, a, it, events);
+    return;
   }
 }
 
@@ -1145,21 +1295,50 @@ function strike(m: Match, a: Actor, aimYaw: number, events: SimEvent[]): void {
       }
     }
     if (!hitSomeone) breakDoor(m, a, events);
-  } else if (a.lucid) {
-    events.push({ type: "swing", who: a.id });
-    a.attackCd = 0.9;
-    const mon = monsterOf(m);
-    if (mon && !mon.dead && inArc(a.x, a.z, a.yaw, mon.x, mon.z, 3.15, 1.25)) {
-      damageMonster(m, 16, events);
-    }
   } else {
+    const w = a.weapon;
+    const lucid = a.lucid;
+    let cd = lucid ? 0.9 : 1.15;
+    let reach = lucid ? 3.15 : 2.25;
+    let arc = lucid ? 1.25 : 1.1;
+    let dmg = lucid ? 16 : 0;
+    let stun = lucid ? 0 : 0.28;
+    if (w === "iron") {
+      cd = lucid ? 1.02 : 1.2;
+      reach = lucid ? 3.55 : 2.7;
+      arc = 1.15;
+      dmg = lucid ? 26 : 0;
+      stun = lucid ? 0 : 0.55;
+    } else if (w === "shears") {
+      cd = lucid ? 0.48 : 0.62;
+      reach = lucid ? 2.45 : 2.05;
+      arc = 0.95;
+      dmg = lucid ? 11 : 0;
+      stun = lucid ? 0 : 0.2;
+    } else if (w === "lamp") {
+      cd = 1.35;
+      reach = 2.7;
+      arc = 1.45;
+      dmg = lucid ? 8 : 0;
+      stun = 0.7;
+      a.veilT = 2.3;
+      a.hearT = 0;
+      a.nerve = Math.min(100, a.nerve + 6);
+    }
     events.push({ type: "swing", who: a.id });
-    a.attackCd = 1.15;
+    a.attackCd = cd;
     const mon = monsterOf(m);
-    if (mon && !mon.dead && inArc(a.x, a.z, a.yaw, mon.x, mon.z, 2.25, 1.1)) {
-      mon.stun = Math.max(mon.stun, 0.28);
-      mon.iframes = Math.max(mon.iframes, 0.55);
-      events.push({ type: "stun" });
+    const hit = !!mon && !mon.dead && inArc(a.x, a.z, a.yaw, mon.x, mon.z, reach, arc);
+    if (hit && mon) {
+      if (dmg > 0) damageMonster(m, dmg, events);
+      if (stun > 0) {
+        mon.stun = Math.max(mon.stun, stun);
+        if (!lucid) mon.iframes = Math.max(mon.iframes, w === "iron" ? 0.4 : 0.55);
+        events.push({ type: "stun" });
+      }
+    }
+    if (w === "lamp") {
+      say(m, hit ? `${a.name} flares the porch lamp. The butcher flinches.` : `${a.name} flares the porch lamp and goes quiet.`);
     }
   }
 }
@@ -1260,7 +1439,9 @@ function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, event
     ablPulse: false,
     dashPulse: false,
     kitPulse: false,
+    dropPulse: false,
   };
+  if (input.dropPulse) dropWeapon(m, a);
   if (a.downed) {
     a.downT -= dt;
     a.spd = 0;
@@ -1289,6 +1470,7 @@ function tickHuman(m: Match, a: Actor, inp: Input | undefined, dt: number, event
   input.ablPulse = false;
   input.dashPulse = false;
   input.kitPulse = false;
+  input.dropPulse = false;
 }
 
 function tickBot(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
@@ -1509,21 +1691,10 @@ function botDreamer(m: Match, a: Actor, dt: number, events: SimEvent[]): void {
     if (dist(a, ally) < 2.3) interact = true;
   }
 
-  if (a.hp < 52 && a.items.includes("bandage") && !danger) {
-    const i = a.items.indexOf("bandage");
-    if (i >= 0) {
-      a.items.splice(i, 1);
-      a.hp = Math.min(DREAMER_HP, a.hp + 48);
-    }
-  }
-  if (a.stamina < 30 && sprint && a.items.includes("adrenaline")) {
-    const i = a.items.indexOf("adrenaline");
-    if (i >= 0) {
-      a.items.splice(i, 1);
-      a.stamina = 100;
-      a.buffT = 4;
-    }
-  }
+  if (a.hp < 52 && !danger) sip(m, a, ["bandage", "mend"], events);
+  if (a.stamina < 30 && sprint) sip(m, a, ["adrenaline", "haste"], events);
+  if (danger && md < 8 && a.veilT <= 0) sip(m, a, ["hush"], events);
+  if (danger && md < 6 && (a.guard ?? 0) <= 0) sip(m, a, ["ward"], events);
 
   locomotion(a, wx, wz, dt, sprint);
   tickInteract(m, a, interact, dt, events);
@@ -1605,6 +1776,7 @@ export function step(m: Match, inputs: Map<string, Input>, dt: number): SimEvent
   if (m.phase !== "play") return [];
   const events: SimEvent[] = [];
   for (const door of m.doors) door.rattle = Math.max(0, (door.rattle || 0) - dt);
+  for (const p of m.pickups) p.cool = Math.max(0, (p.cool ?? 0) - dt);
   for (const car of m.cars) car.cd = Math.max(0, car.cd - dt);
   syncDoors(m);
   m.time += dt;
@@ -1705,7 +1877,24 @@ export function promptFor(m: Match, id: string): string {
     return "Hold to wake";
   }
   if (!me.lucid && me.abilityCd <= 0 && me.nerve >= 34) return "Q veil";
+  const arm = nearestWeapon(m, me);
+  if (arm && me.weapon && arm.id !== me.armLock && me.weapon !== arm.kind) return `Swap for the ${weaponLabel(arm.kind).toLowerCase()}`;
+  if (me.weapon) return `G drop the ${weaponLabel(me.weapon).toLowerCase()}`;
   return "";
+}
+
+function nearestWeapon(m: Match, a: Actor): Pickup | null {
+  let best: Pickup | null = null;
+  let bestD = 1.55;
+  for (const p of m.pickups) {
+    if (p.taken || (p.cool ?? 0) > 0 || !isWeapon(p.kind)) continue;
+    const d = dist(a, p);
+    if (d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return best;
 }
 
 export type CheckRow = { label: string; done: boolean };
