@@ -647,13 +647,19 @@ export class DreamSession {
       }
     }
     setText(this.hud.objective, objectiveFor(this.match, me.id));
-    setText(this.hud.prompt, promptFor(this.match, me.id));
+    let prompt = promptFor(this.match, me.id);
+    if (this.down("KeyE")) {
+      const sprint = this.down("ShiftLeft") || this.down("ShiftRight");
+      const reason = failReason(this.match, me.id, "e", sprint);
+      if (reason) prompt = reason;
+    }
+    setText(this.hud.prompt, prompt);
     setText(this.hud.role, roleLabel(me));
     setText(this.hud.clock, clockText(this.match.time));
     paintChecklist(this.hud.checklist, checklistFor(this.match, me.id));
     paintJournal(this.hud.journal, me.heard ?? []);
     const quiet = me.role === "somnarch" ? me.spd < 2.8 && me.stalk > 18 : me.fear < 22;
-    const fade = quiet ? "0.32" : "1";
+    const fade = quiet ? "0.72" : "1";
     for (const el of [this.hud.checklist, this.hud.objective, this.hud.clock, this.hud.map, this.hud.cds]) {
       if (el) el.style.opacity = fade;
     }
@@ -809,7 +815,7 @@ export class DreamSession {
     if (me.role === "dreamer" && this.match.bellX) {
       ctx.fillStyle = "#ffb46a";
       ctx.beginPath();
-      ctx.arc(X(this.match.bellX), Y(this.match.bellZ), 3.2, 0, Math.PI * 2);
+      ctx.arc(X(this.match.bellX), Y(this.match.bellZ), 5.6, 0, Math.PI * 2);
       ctx.fill();
     }
     for (const door of this.match.doors) {
@@ -1292,8 +1298,8 @@ export class DreamSession {
   private paintHint(me: Actor): void {
     if (!this.match) return;
     const now = performance.now();
-    if (this.keys.has("KeyE")) {
-      const sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    if (this.down("KeyE")) {
+      const sprint = this.down("ShiftLeft") || this.down("ShiftRight");
       const reason = failReason(this.match, me.id, "e", sprint);
       if (reason) {
         this.hintText = reason;

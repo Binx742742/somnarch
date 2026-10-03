@@ -170,8 +170,20 @@ export class DreamRenderer {
       new THREE.SphereGeometry(0.28, 10, 8),
       new THREE.MeshStandardMaterial({ color: 0xffb46a, emissive: 0xffb46a, emissiveIntensity: 0.8, roughness: 0.35 }),
     );
-    head.position.y = 2.3;
-    this.bell.add(post, head);
+    head.position.y = 2.6;
+    head.scale.setScalar(1.8);
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.42, 18, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffb46a, transparent: true, opacity: 0.45, depthWrite: false }),
+    );
+    shaft.position.y = 9;
+    const pad = new THREE.Mesh(
+      new THREE.TorusGeometry(3.4, 0.08, 6, 28),
+      new THREE.MeshBasicMaterial({ color: 0xffb46a, transparent: true, opacity: 0.9 }),
+    );
+    pad.rotation.x = Math.PI / 2;
+    pad.position.y = 0.15;
+    this.bell.add(post, head, shaft, pad);
     this.scene.add(this.guide, this.here, this.bell);
     this.buildShowcase();
 

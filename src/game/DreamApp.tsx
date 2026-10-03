@@ -201,7 +201,7 @@ export function DreamApp() {
           <p data-hud="role" className="font-display text-xs tracking-widest text-moon" />
           <div data-hud="checklist" className="mt-2 flex flex-col gap-1" />
           <div data-hud="journal" className="mt-2 flex flex-col gap-0.5" />
-          <p data-hud="objective" className="mt-2 max-w-56 text-xs leading-snug text-muted" />
+          <p data-hud="objective" className="mt-2 max-w-56 text-xs leading-snug text-fg" />
         </div>
         <div className="absolute top-4 left-1/2 -translate-x-1/2 text-center">
           <p data-hud="clock" className="dream-clock" />
